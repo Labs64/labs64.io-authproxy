@@ -6,16 +6,14 @@
 ![Docker Image Version](https://img.shields.io/docker/v/labs64/gateway?logo=docker&logoColor=%23E14817&color=%23E14817)
 [![📖 Documentation](https://img.shields.io/badge/📖-Documentation-AB6543.svg)](https://github.com/Labs64/labs64.io-docs)
 
-Key responsibilities of the API Gateway:
+Key responsibilities of the API Gateway stack (Traefik + gateway-common + traefik-authproxy):
 
-- Request Routing: Directs incoming HTTP/S requests to the appropriate backend service or RabbitMQ exchange/queue.
-- Protocol Translation: Translates synchronous HTTP/S requests from clients into asynchronous messages for RabbitMQ, and vice-versa for responses.
-- Authentication and Authorization: Enforces security policies before requests reach your internal services.
-- Rate Limiting and Throttling: Protects your backend from abuse and ensures fair usage.
-- Caching: Caches responses for frequently accessed data, reducing load on your backend.
-- Request/Response Transformation: Modifies request or response bodies/headers to fit external API contracts.
-- Load Balancing: Distributes requests across multiple instances of your services.
-- Monitoring and Logging: Provides a central point for tracking API usage and performance.
+- Request Routing: module-owned Traefik IngressRoutes direct requests to backend services.
+- Authentication and Authorization: ForwardAuth middleware verifies OIDC/JWT (M2M) tokens and enforces path/role mappings via traefik-authproxy.
+- Rate Limiting and Throttling: per-user rate limit middleware protects backends from abuse.
+- Security Headers: standard security headers applied at the gateway.
+- API Documentation: aggregated Swagger UI for all installed modules.
+- Monitoring and Logging: central point for tracking API usage and performance.
 
 ## Star History
 
