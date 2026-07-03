@@ -6,12 +6,12 @@ import: github.com/Labs64/labs64.io-gateway/traefik-authproxy
 
 summary: >
   This repository contains a custom Traefik ForwardAuth middleware.
-  The middleware is designed to verify M2M (Machine-to-Machine) JWT tokens issued by Keycloak and
+  The middleware is designed to verify M2M (Machine-to-Machine) JWT tokens issued by an OIDC provider and
   enforce path-based role-based access control (RBAC) for microservices deployed on Kubernetes.
 
 testData:
-  OIDC_DISCOVERY_URL: http://keycloak.tools.svc.cluster.local/realms/labs64io/.well-known/openid-configuration
-  OIDC_URL: http://keycloak.tools.svc.cluster.local
+  OIDC_DISCOVERY_URL: http://mock-oidc.tools.svc.cluster.local:8080/labs64io/.well-known/openid-configuration
+  OIDC_URL: http://mock-oidc.tools.svc.cluster.local:8080
   OIDC_REALM: labs64io
   OIDC_AUDIENCE: account
   ROLE_MAPPING_FILE: /opt/application-config/role_mapping.yaml

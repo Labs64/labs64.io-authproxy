@@ -1,6 +1,6 @@
 APP_NAME := "traefik-authproxy"
 
-LOCAL_KEYCLOAK := "http://keycloak.localhost"
+LOCAL_OIDC := "http://mock-oidc.localhost"
 LOCAL_OIDC_DOCKER := "http://host.docker.internal:8080"
 LOCAL_CLIENT_ID := "audit-service-client"
 LOCAL_CLIENT_SECRET := "mTEqlt1dDzcVyEOzFjBZV4X8jvEkaQnc"
@@ -35,14 +35,15 @@ check-updates:
     rm -rf temp_env
     docker scout cves {{APP_NAME}}:latest
 
-# open Keycloak well-known configuration
+# open OIDC well-known configuration
 test-show-wellknown:
-    open "{{LOCAL_KEYCLOAK}}/realms/labs64io/.well-known/openid-configuration"
+    open "{{LOCAL_OIDC}}/labs64io/.well-known/openid-configuration"
 
 # generate JWT token
 test-generate-jwt-token:
-    curl --location --request POST '{{LOCAL_KEYCLOAK}}/realms/labs64io/protocol/openid-connect/token' \
+    curl --location --request POST '{{LOCAL_OIDC}}/labs64io/token' \
     --header 'Content-Type: application/x-www-form-urlencoded' \
     --data-urlencode 'grant_type=client_credentials' \
     --data-urlencode 'client_id={{LOCAL_CLIENT_ID}}' \
-    --data-urlencode 'client_secret={{LOCAL_CLIENT_SECRET}}'
+    --data-urlencode 'client_secret={{LOCAL_CLIENT_SECRET}}' \
+    --data-urlencode 'scope=admin'

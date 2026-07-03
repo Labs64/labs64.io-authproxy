@@ -1,6 +1,6 @@
 # AGENTS.md — Labs64.IO :: API Gateway
 
-Traefik ForwardAuth middleware — verifies OIDC/JWT tokens (Keycloak) and enforces path-based RBAC. All inbound requests pass through this proxy.
+Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-based RBAC. All inbound requests pass through this proxy.
 
 ## Ecosystem role
 
@@ -18,7 +18,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens (Keycloak) and enfor
 
 1. **Never hardcode credentials** — env vars or K8s Secrets only.
 2. **Preserve `l64user`** (uid/gid 1064) in Dockerfiles.
-3. **Role mapping must be consistent** with Keycloak role claims.
+3. **Role mapping must be consistent** with OIDC provider role claims.
 
 ## Auth proxy details
 
@@ -33,8 +33,8 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens (Keycloak) and enfor
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OIDC_URL` | `http://keycloak.tools.svc.cluster.local` | OIDC provider base URL |
-| `OIDC_REALM` | `default` | Keycloak realm |
+| `OIDC_URL` | `http://mock-oidc.tools.svc.cluster.local:8080` | OIDC provider base URL |
+| `OIDC_REALM` | `default` | OIDC realm |
 | `OIDC_AUDIENCE` | `account` | Expected JWT audience |
 | `TOKEN_ROLES_CLAIM_PATHS` | `realm_access.roles,resource_access.{audience}.roles` | JWT claim paths |
 | `ROLE_MAPPING_FILE` | `role_mapping.yaml` | Base role mapping |
@@ -46,7 +46,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens (Keycloak) and enfor
 ```bash
 cd traefik-authproxy
 just docker         # build + push to localhost:5005
-just run            # build + run with local Keycloak config
+just run            # build + run with local OIDC config
 just docu           # open ReDoc + Swagger docs
 ```
 

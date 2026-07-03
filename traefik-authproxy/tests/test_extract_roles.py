@@ -7,7 +7,7 @@ import traefik_authproxy
 from traefik_authproxy import extract_token_roles
 
 
-def test_default_keycloak_realm_and_client_roles(monkeypatch):
+def test_default_oidc_realm_and_client_roles(monkeypatch):
     monkeypatch.setattr(traefik_authproxy, "TOKEN_ROLES_CLAIM_PATHS",
                         "realm_access.roles,resource_access.{audience}.roles")
     monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", "account")
