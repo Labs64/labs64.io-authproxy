@@ -27,6 +27,13 @@ OIDC_DISCOVERY_URL = os.getenv(
 )
 
 OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "account")
+# Comma-separated dot-paths into the JWT payload to collect roles/scopes from.
+# "{audience}" is replaced with OIDC_AUDIENCE. List values contribute items;
+# string values are whitespace-split (OAuth2 scp/scope style).
+TOKEN_ROLES_CLAIM_PATHS = os.getenv(
+    "TOKEN_ROLES_CLAIM_PATHS",
+    "realm_access.roles,resource_access.{audience}.roles",
+)
 ROLE_MAPPING_FILE = os.getenv("ROLE_MAPPING_FILE", "role_mapping.yaml")
 # Directory with per-module role-mapping fragments (e.g. populated by a
 # k8s-sidecar from labeled ConfigMaps); merged on top of ROLE_MAPPING_FILE.
@@ -204,17 +211,27 @@ def verify_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Token verification failed")
 
 # --- Role Extractor ---
+def _resolve_claim_path(payload: Dict[str, Any], path: str) -> Any:
+    """Walk a dot-path into a nested dict; returns None when any segment is missing."""
+    node: Any = payload
+    for segment in path.split("."):
+        if not isinstance(node, dict) or segment not in node:
+            return None
+        node = node[segment]
+    return node
+
+
 def extract_token_roles(payload: Dict[str, Any]) -> List[str]:
     roles: set[str] = set()
-
-    realm_roles = payload.get("realm_access", {}).get("roles", [])
-    if isinstance(realm_roles, list):
-        roles.update(realm_roles)
-
-    client_roles = payload.get("resource_access", {}).get(OIDC_AUDIENCE, {}).get("roles", [])
-    if isinstance(client_roles, list):
-        roles.update(client_roles)
-
+    for raw_path in TOKEN_ROLES_CLAIM_PATHS.split(","):
+        path = raw_path.strip().replace("{audience}", OIDC_AUDIENCE)
+        if not path:
+            continue
+        value = _resolve_claim_path(payload, path)
+        if isinstance(value, list):
+            roles.update(str(v) for v in value)
+        elif isinstance(value, str):
+            roles.update(value.split())
     return list(roles)
 
 # --- Path Role Matcher ---
