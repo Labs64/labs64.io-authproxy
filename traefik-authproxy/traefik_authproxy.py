@@ -28,6 +28,9 @@ OIDC_DISCOVERY_URL = os.getenv(
 
 OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "account")
 ROLE_MAPPING_FILE = os.getenv("ROLE_MAPPING_FILE", "role_mapping.yaml")
+# Directory with per-module role-mapping fragments (e.g. populated by a
+# k8s-sidecar from labeled ConfigMaps); merged on top of ROLE_MAPPING_FILE.
+ROLE_MAPPING_DIR = os.getenv("ROLE_MAPPING_DIR", "")
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # Keycloak key rotation will be picked up after this interval.
@@ -60,39 +63,62 @@ class ReloadResponse(BaseModel):
     public_paths: int
 
 # --- Load Role Mapping and Public Paths ---
-def load_role_mapping(file_path: str) -> Tuple[Dict[str, List[str]], List[str]]:
-    """Load role mapping from a YAML file.
+def _parse_mapping_file(file_path: str) -> Dict[str, Any]:
+    """Parse one role-mapping YAML file into a raw dict."""
+    with open(file_path, "r") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{file_path}: role mapping must be a dictionary")
+    return raw
 
-    Returns a tuple of (protected_paths, public_paths).
-    A path with no roles, an empty list, or ["public"] is treated as public.
+
+def load_role_mappings(file_path: str = "", dir_path: str = "") -> Tuple[Dict[str, List[str]], List[str]]:
+    """Load and merge role mappings from a base file and a fragments directory.
+
+    Fragment files (*.yaml / *.yml) are merged in sorted filename order after
+    the base file; later keys override earlier ones. A path with no roles, an
+    empty list, or ["public"] is treated as public.
     """
-    try:
-        with open(file_path, "r") as f:
-            raw_mapping = yaml.safe_load(f)
-
-        if not isinstance(raw_mapping, dict):
-            raise ValueError("Role mapping file must contain a dictionary")
-
-        protected_paths: Dict[str, List[str]] = {}
-        public_paths: List[str] = []
-
-        for path, roles in raw_mapping.items():
-            if roles in (None, [], ["public"]):
-                public_paths.append(path)
-                app_logger.debug(f"load_role_mapping::Detected public path: {path}")
-            else:
-                protected_paths[path] = roles
-
-        app_logger.info(
-            f"Role mapping loaded: {len(protected_paths)} protected paths, {len(public_paths)} public paths"
+    sources: List[str] = []
+    if file_path and os.path.isfile(file_path):
+        sources.append(file_path)
+    if dir_path and os.path.isdir(dir_path):
+        sources.extend(
+            sorted(
+                os.path.join(dir_path, fn)
+                for fn in os.listdir(dir_path)
+                if fn.endswith((".yaml", ".yml"))
+            )
         )
-        return protected_paths, public_paths
 
-    except Exception as e:
-        app_logger.warning(f"load_role_mapping::Skipping path check – failed to load mapping: {e}")
-        return {}, []
+    raw_mapping: Dict[str, Any] = {}
+    for src in sources:
+        try:
+            raw_mapping.update(_parse_mapping_file(src))
+        except Exception as e:
+            app_logger.warning(f"load_role_mappings::Skipping {src}: {e}")
 
-PROTECTED_PATHS, PUBLIC_PATHS = load_role_mapping(ROLE_MAPPING_FILE)
+    protected_paths: Dict[str, List[str]] = {}
+    public_paths: List[str] = []
+    for path, roles in raw_mapping.items():
+        if roles in (None, [], ["public"]):
+            public_paths.append(path)
+            app_logger.debug(f"load_role_mappings::Detected public path: {path}")
+        else:
+            protected_paths[path] = roles
+
+    app_logger.info(
+        f"Role mapping loaded from {len(sources)} file(s): "
+        f"{len(protected_paths)} protected paths, {len(public_paths)} public paths"
+    )
+    return protected_paths, public_paths
+
+
+def load_role_mapping(file_path: str) -> Tuple[Dict[str, List[str]], List[str]]:
+    """Backward-compatible single-file loader."""
+    return load_role_mappings(file_path=file_path)
+
+PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
 
 # --- Lifespan (prefetch JWKS on startup) ---
 @asynccontextmanager
@@ -241,7 +267,7 @@ async def reload_role_mapping():
     Useful when the role mapping ConfigMap is updated in Kubernetes.
     """
     global PROTECTED_PATHS, PUBLIC_PATHS
-    PROTECTED_PATHS, PUBLIC_PATHS = load_role_mapping(ROLE_MAPPING_FILE)
+    PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
     return ReloadResponse(
         message="Role mapping reloaded successfully",
         protected_paths=len(PROTECTED_PATHS),
