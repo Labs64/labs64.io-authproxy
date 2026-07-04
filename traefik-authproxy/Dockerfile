@@ -1,4 +1,4 @@
-FROM python:3-alpine
+FROM python:3.13-alpine
 
 # Define build arguments
 ARG USER_ID=1064
@@ -23,6 +23,12 @@ COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py .
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Observability runtime (infrastructure-owned; auto-instrumentation activated by
+# entrypoint.sh only when OTEL_EXPORTER_OTLP_ENDPOINT is set). Same image, both modes.
+COPY --chown=${USER_NAME}:${GROUP_NAME} requirements-otel.txt .
+RUN pip install --no-cache-dir -r requirements-otel.txt
+COPY --chown=${USER_NAME}:${GROUP_NAME} --chmod=755 entrypoint.sh .
+
 # Make port 8081 available outside this container
 EXPOSE 8081
 
@@ -32,6 +38,9 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 # Set user context
 USER ${USER_NAME}
+
+# entrypoint.sh enables OTel auto-instrumentation iff OTEL_EXPORTER_OTLP_ENDPOINT is set
+ENTRYPOINT ["./entrypoint.sh"]
 
 # Run the FastAPI application using Uvicorn
 CMD ["uvicorn", "traefik_authproxy:app", "--host", "0.0.0.0", "--port", "8081"]
