@@ -96,7 +96,7 @@ def _uuid7() -> str:
 def resolve_request_id(request: Request) -> str:
     """Echo a well-formed inbound X-Request-ID; generate a UUIDv7 otherwise."""
     inbound = request.headers.get(HEADER_REQUEST_ID, "")
-    if inbound and _HEADER_VALUE_PATTERN.fullmatch(inbound):
+    if inbound and len(inbound) <= 128 and _HEADER_VALUE_PATTERN.fullmatch(inbound):
         return inbound
     return _uuid7()
 
@@ -109,7 +109,7 @@ def set_auth_headers(
     tenant: Optional[str] = None,
 ) -> JSONResponse:
     """Emit the complete trusted header set on a 2xx /auth response."""
-    sanitized_roles = [r for r in (sanitize_header_value(role) for role in (roles or [])) if r]
+    sanitized_roles = sorted(r for r in (sanitize_header_value(role) for role in (roles or [])) if r)
     sanitized_tenant = sanitize_header_value(tenant)
     response.headers[HEADER_AUTH_USER] = sanitize_header_value(user_id)
     response.headers[HEADER_AUTH_ROLES] = ",".join(sanitized_roles)
