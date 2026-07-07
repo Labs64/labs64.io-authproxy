@@ -162,3 +162,16 @@ def test_unmapped_protected_path_fails_closed(client, valid_token):
         headers={"X-Forwarded-Uri": "/unknown/api", "Authorization": "Bearer x"},
     )
     assert response.status_code == 403
+
+
+def test_subjectless_client_token_maps_to_service_principal(client, monkeypatch):
+    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+        "azp": "checkout-be",
+        "realm_access": {"roles": ["ecommerce-role"]},
+    })
+    response = client.get(
+        "/auth",
+        headers={"X-Forwarded-Uri": "/checkout/api/v1/customers", "Authorization": "Bearer x"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Auth-User"] == "svc:checkout-be"

@@ -400,6 +400,11 @@ async def authenticate(request: Request):
         raise HTTPException(status_code=403, detail=f"Insufficient roles. Required: {required_roles}")
 
     user_id = payload.get("preferred_username") or payload.get("sub")
+    if not user_id:
+        # Client-credentials token without a subject: map the client to a
+        # service principal (RFC-03: X-Auth-User: svc:<name>).
+        client = payload.get("azp") or payload.get("client_id")
+        user_id = f"svc:{client}" if client else None
     tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
     app_logger.info(f"Access granted to user {user_id} for path {forwarded_uri}")
 
