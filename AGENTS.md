@@ -6,7 +6,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 - Deployed as `traefik-authproxy` Helm chart in `labs64io` namespace.
 - Traefik forwards every request to `/auth` before routing to upstream services.
-- On success, sets `X-Auth-User` and `X-Auth-Roles` headers that upstream services trust.
+- On success, emits the full RFC-03 trusted header contract that upstream services trust: `X-Auth-User`, `X-Auth-Roles`, `X-Auth-Tenant` (`-` when tenant-less), `X-Request-ID` (echoed when well-formed, otherwise generated as UUIDv7). All four are set on **every** 2xx (empty when not applicable) so Traefik's `authResponseHeaders` always overwrite client-supplied values. Values are sanitized to `^[a-zA-Z0-9_.:-]+$` (CR/LF stripped) — keep identical to the `l64-auth-context` libraries in `labs64.io-commons`.
 
 ## Repository layout
 
@@ -37,6 +37,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 | `OIDC_REALM` | `default` | OIDC realm |
 | `OIDC_AUDIENCE` | `account` | Expected JWT audience |
 | `TOKEN_ROLES_CLAIM_PATHS` | `realm_access.roles,resource_access.{audience}.roles` | JWT claim paths |
+| `TOKEN_TENANT_CLAIM_PATH` | `tenant` | JWT dot-path for the tenant identifier (`X-Auth-Tenant`) |
 | `ROLE_MAPPING_FILE` | `role_mapping.yaml` | Base role mapping |
 | `ROLE_MAPPING_DIR` | (empty) | Per-module role mapping fragments |
 | `JWKS_CACHE_TTL` | `3600` | JWKS cache TTL (seconds) |

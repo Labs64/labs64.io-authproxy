@@ -1,4 +1,6 @@
 import os
+import re
+import secrets
 import time
 import uuid
 import logging
@@ -34,6 +36,8 @@ TOKEN_ROLES_CLAIM_PATHS = os.getenv(
     "TOKEN_ROLES_CLAIM_PATHS",
     "realm_access.roles,resource_access.{audience}.roles",
 )
+# Dot-path into the JWT payload for the tenant identifier (RFC-03 header contract).
+TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 ROLE_MAPPING_FILE = os.getenv("ROLE_MAPPING_FILE", "role_mapping.yaml")
 # Directory with per-module role-mapping fragments (e.g. populated by a
 # k8s-sidecar from labeled ConfigMaps); merged on top of ROLE_MAPPING_FILE.
@@ -51,6 +55,67 @@ numeric_level = getattr(logging, LOG_LEVEL, logging.INFO)
 logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
 app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
+
+# --- Trusted header contract (RFC-03) ---
+# Every 2xx from /auth carries the full set (empty / "-" when not applicable),
+# so Traefik's authResponseHeaders always overwrite anything a client sent.
+HEADER_AUTH_USER = "X-Auth-User"
+HEADER_AUTH_ROLES = "X-Auth-Roles"
+HEADER_AUTH_TENANT = "X-Auth-Tenant"
+HEADER_REQUEST_ID = "X-Request-ID"
+TENANT_NONE = "-"
+
+# Allowed characters for emitted header values; everything else (incl. CR/LF)
+# is stripped. Keep identical to the l64-auth-context libraries.
+_HEADER_VALUE_ALLOWED = re.compile(r"[^a-zA-Z0-9_.:-]")
+_HEADER_VALUE_PATTERN = re.compile(r"[a-zA-Z0-9_.:-]+")
+
+
+def sanitize_header_value(value: Any) -> str:
+    """Strip everything outside the contract's value alphabet (incl. CR/LF)."""
+    if value is None:
+        return ""
+    return _HEADER_VALUE_ALLOWED.sub("", str(value))
+
+
+def _uuid7() -> str:
+    """UUIDv7 (time-ordered); stdlib on Python >= 3.14, manual fallback below."""
+    if hasattr(uuid, "uuid7"):
+        return str(uuid.uuid7())
+    timestamp_ms = time.time_ns() // 1_000_000
+    rand_a = secrets.randbits(12)
+    rand_b = secrets.randbits(62)
+    value = (timestamp_ms & 0xFFFFFFFFFFFF) << 80
+    value |= 0x7 << 76
+    value |= rand_a << 64
+    value |= 0b10 << 62
+    value |= rand_b
+    return str(uuid.UUID(int=value))
+
+
+def resolve_request_id(request: Request) -> str:
+    """Echo a well-formed inbound X-Request-ID; generate a UUIDv7 otherwise."""
+    inbound = request.headers.get(HEADER_REQUEST_ID, "")
+    if inbound and _HEADER_VALUE_PATTERN.fullmatch(inbound):
+        return inbound
+    return _uuid7()
+
+
+def set_auth_headers(
+    response: JSONResponse,
+    request_id: str,
+    user_id: str = "",
+    roles: Optional[List[str]] = None,
+    tenant: Optional[str] = None,
+) -> JSONResponse:
+    """Emit the complete trusted header set on a 2xx /auth response."""
+    sanitized_roles = [r for r in (sanitize_header_value(role) for role in (roles or [])) if r]
+    sanitized_tenant = sanitize_header_value(tenant)
+    response.headers[HEADER_AUTH_USER] = sanitize_header_value(user_id)
+    response.headers[HEADER_AUTH_ROLES] = ",".join(sanitized_roles)
+    response.headers[HEADER_AUTH_TENANT] = sanitized_tenant if sanitized_tenant else TENANT_NONE
+    response.headers[HEADER_REQUEST_ID] = request_id
+    return response
 
 # --- Response Models ---
 class AuthResponse(BaseModel):
@@ -298,17 +363,23 @@ async def authenticate(request: Request):
     """Authenticate and authorize a request forwarded by Traefik.
 
     Validates the JWT token from the Authorization header, extracts user roles,
-    and checks them against the configured path/role mapping. On success, the
-    response includes headers that Traefik can forward to upstream services:
-    - X-Auth-User: the subject (sub) claim from the JWT
-    - X-Auth-Roles: comma-separated list of roles
+    and checks them against the configured path/role mapping. Every 2xx response
+    carries the full RFC-03 trusted header set (empty / "-" when not applicable)
+    so Traefik's authResponseHeaders always overwrite client-supplied values:
+    - X-Auth-User: preferred_username | sub claim from the JWT
+    - X-Auth-Roles: comma-separated list of roles (may be empty)
+    - X-Auth-Tenant: tenant claim ("-" for tenant-less calls)
+    - X-Request-ID: echoed if well-formed, otherwise generated (UUIDv7)
     """
     forwarded_uri = request.headers.get("X-Forwarded-Uri", "/")
     app_logger.debug(f"Received request on forwarded URI: {forwarded_uri}")
 
+    request_id = resolve_request_id(request)
+
     if is_public_path(forwarded_uri):
         app_logger.info(f"Public access granted to: {forwarded_uri}")
-        return AuthResponse(message="Public access granted")
+        response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
+        return set_auth_headers(response, request_id)
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -328,7 +399,8 @@ async def authenticate(request: Request):
     if not set(user_roles).intersection(required_roles):
         raise HTTPException(status_code=403, detail=f"Insufficient roles. Required: {required_roles}")
 
-    user_id = payload.get("sub")
+    user_id = payload.get("preferred_username") or payload.get("sub")
+    tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
     app_logger.info(f"Access granted to user {user_id} for path {forwarded_uri}")
 
     # Return identity headers that Traefik can forward to upstream services
@@ -339,7 +411,4 @@ async def authenticate(request: Request):
             roles=user_roles,
         ).model_dump()
     )
-    response.headers["X-Auth-User"] = user_id or ""
-    response.headers["X-Auth-Roles"] = ",".join(user_roles)
-
-    return response
+    return set_auth_headers(response, request_id, user_id=user_id, roles=user_roles, tenant=tenant)
