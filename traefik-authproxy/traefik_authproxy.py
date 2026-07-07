@@ -36,7 +36,7 @@ TOKEN_ROLES_CLAIM_PATHS = os.getenv(
     "TOKEN_ROLES_CLAIM_PATHS",
     "realm_access.roles,resource_access.{audience}.roles",
 )
-# Dot-path into the JWT payload for the tenant identifier (RFC-03 header contract).
+# Dot-path into the JWT payload for the tenant identifier.
 TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 ROLE_MAPPING_FILE = os.getenv("ROLE_MAPPING_FILE", "role_mapping.yaml")
 # Directory with per-module role-mapping fragments (e.g. populated by a
@@ -56,7 +56,7 @@ logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
 app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
 
-# --- Trusted header contract (RFC-03) ---
+# --- Trusted header contract ---
 # Every 2xx from /auth carries the full set (empty / "-" when not applicable),
 # so Traefik's authResponseHeaders always overwrite anything a client sent.
 HEADER_AUTH_USER = "X-Auth-User"
@@ -364,7 +364,7 @@ async def authenticate(request: Request):
 
     Validates the JWT token from the Authorization header, extracts user roles,
     and checks them against the configured path/role mapping. Every 2xx response
-    carries the full RFC-03 trusted header set (empty / "-" when not applicable)
+    carries the full trusted header set (empty / "-" when not applicable)
     so Traefik's authResponseHeaders always overwrite client-supplied values:
     - X-Auth-User: preferred_username | sub claim from the JWT
     - X-Auth-Roles: comma-separated list of roles (may be empty)
@@ -402,7 +402,7 @@ async def authenticate(request: Request):
     user_id = payload.get("preferred_username") or payload.get("sub")
     if not user_id:
         # Client-credentials token without a subject: map the client to a
-        # service principal (RFC-03: X-Auth-User: svc:<name>).
+        # service principal (X-Auth-User: svc:<name>).
         client = payload.get("azp") or payload.get("client_id")
         user_id = f"svc:{client}" if client else None
     tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
