@@ -56,6 +56,21 @@ logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
 app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
 
+
+# Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
+# /openapi.json).  The health probe already suppresses readiness traffic; these
+# are the Swagger-UI assets that k8s liveness/readiness hit repeatedly.
+_QUIET_PATHS_RE = re.compile(r'"(?:GET|HEAD|POST)\s+/(?:docs|openapi\.json|redoc)\b')
+
+
+class _QuietPathsFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _QUIET_PATHS_RE.search(record.getMessage())
+
+
+for _name in ("uvicorn.access", "uvicorn"):
+    logging.getLogger(_name).addFilter(_QuietPathsFilter())
+
 # --- Trusted header contract ---
 # Every 2xx from /auth carries the full set (empty / "-" when not applicable),
 # so Traefik's authResponseHeaders always overwrite anything a client sent.
@@ -192,6 +207,12 @@ def load_role_mapping(file_path: str) -> Tuple[Dict[str, List[str]], List[str]]:
 
 PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
 
+# --- Startup log ---
+app_logger.info(
+    f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
+    f"role-claim paths: {TOKEN_ROLES_CLAIM_PATHS}, JWKS cache TTL: {JWKS_CACHE_TTL}s"
+)
+
 # --- Lifespan (prefetch JWKS on startup) ---
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -243,6 +264,7 @@ def get_jwks() -> Dict[str, Any]:
         JWKS_CACHE.clear()
         JWKS_CACHE.update(resp.json())
         JWKS_CACHE_TIME = time.monotonic()
+        app_logger.info("get_jwks::JWKS cache refreshed successfully")
         return JWKS_CACHE
 
     except (requests.RequestException, ValueError) as e:
@@ -350,6 +372,7 @@ async def reload_role_mapping():
     """
     global PROTECTED_PATHS, PUBLIC_PATHS
     PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
+    app_logger.info("Role mapping reloaded via /reload endpoint")
     return ReloadResponse(
         message="Role mapping reloaded successfully",
         protected_paths=len(PROTECTED_PATHS),
@@ -377,12 +400,13 @@ async def authenticate(request: Request):
     request_id = resolve_request_id(request)
 
     if is_public_path(forwarded_uri):
-        app_logger.info(f"Public access granted to: {forwarded_uri}")
+        app_logger.debug(f"Public access granted to: {forwarded_uri}")
         response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
         return set_auth_headers(response, request_id)
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
+        app_logger.warning(f"Auth rejected — missing/malformed token for {forwarded_uri}")
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
 
     token = auth_header.split(" ", 1)[1]
@@ -390,13 +414,19 @@ async def authenticate(request: Request):
     user_roles = extract_token_roles(payload)
 
     if not user_roles:
+        app_logger.warning(f"Auth rejected — token has no roles for {forwarded_uri}")
         raise HTTPException(status_code=403, detail="Token contains no roles")
 
     required_roles = get_required_roles(forwarded_uri)
     if not required_roles:
+        app_logger.warning(f"Auth rejected — no access control configured for {forwarded_uri}")
         raise HTTPException(status_code=403, detail=f"No access control configured for: {forwarded_uri}")
 
     if not set(user_roles).intersection(required_roles):
+        app_logger.warning(
+            f"Auth rejected — insufficient roles for {forwarded_uri} "
+            f"(has: {user_roles}, needs: {required_roles})"
+        )
         raise HTTPException(status_code=403, detail=f"Insufficient roles. Required: {required_roles}")
 
     user_id = payload.get("preferred_username") or payload.get("sub")
