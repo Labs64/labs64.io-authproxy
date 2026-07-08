@@ -66,7 +66,7 @@ HEADER_REQUEST_ID = "X-Request-ID"
 TENANT_NONE = "-"
 
 # Allowed characters for emitted header values; everything else (incl. CR/LF)
-# is stripped. Keep identical to the l64-auth-context libraries.
+# is stripped. Keep identical to the auth-context libraries.
 _HEADER_VALUE_ALLOWED = re.compile(r"[^a-zA-Z0-9_.:-]")
 _HEADER_VALUE_PATTERN = re.compile(r"[a-zA-Z0-9_.:-]+")
 
