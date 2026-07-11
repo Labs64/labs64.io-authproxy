@@ -8,6 +8,9 @@ from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 
 import requests
+from datetime import datetime, timezone
+from http import HTTPStatus
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -192,6 +195,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _ecosystem_error_response(request: Request, status_code: int, message: str) -> JSONResponse:
+    try:
+        code_name = HTTPStatus(status_code).name
+    except ValueError:
+        code_name = "UNKNOWN_ERROR"
+        
+    trace_id = getattr(request.state, "correlation_id", "")
+    content = {
+        "code": code_name,
+        "message": message,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "traceId": trace_id
+    }
+    return JSONResponse(status_code=status_code, content=content)
+
+@app.exception_handler(HTTPException)
+async def ecosystem_http_exception_handler(request: Request, exc: HTTPException):
+    return _ecosystem_error_response(request, exc.status_code, str(exc.detail))
+
+@app.exception_handler(Exception)
+async def ecosystem_global_exception_handler(request: Request, exc: Exception):
+    app_logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return _ecosystem_error_response(request, 500, "Internal server error")
+
 # --- JWKS Loader with Discovery and TTL ---
 def get_jwks() -> Dict[str, Any]:
     """Fetch JWKS keys with TTL-based caching.
@@ -292,6 +319,7 @@ async def correlation_id_middleware(request: Request, call_next):
     payment-gateway modules.
     """
     correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    request.state.correlation_id = correlation_id
     response = await call_next(request)
     response.headers["X-Correlation-ID"] = correlation_id
     return response
