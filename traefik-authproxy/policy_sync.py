@@ -56,6 +56,7 @@ class PolicySync:
         Outside a cluster (local dev / docker), discovery is disabled: the ACS
         serves static policies only and reports ready immediately.
         """
+        self._stopping.clear()  # allow a restart to re-enter the loop bodies
         try:
             from kubernetes import client, config
             try:
