@@ -6,7 +6,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 - Deployed as `traefik-authproxy` Helm chart in `labs64io` namespace.
 - Traefik forwards every request to `/auth` before routing to upstream services.
-- On success, emits the full trusted header contract that upstream services trust: `X-Auth-User`, `X-Auth-Roles`, `X-Auth-Tenant` (`-` when tenant-less), `X-Request-ID` (echoed when well-formed, otherwise generated as UUIDv7). All four are set on **every** 2xx (empty when not applicable) so Traefik's `authResponseHeaders` always overwrite client-supplied values. Values are sanitized to `^[a-zA-Z0-9_.:-]+$` (CR/LF stripped) — keep identical to the `auth-context` libraries in `labs64.io-commons`.
+- On success, emits the full trusted header contract that upstream services trust: `X-Auth-User`, `X-Auth-Scopes`, `X-Auth-Tenant` (`-` when tenant-less), `X-Request-ID` (echoed when well-formed, otherwise generated as UUIDv7). All four are set on **every** 2xx (empty when not applicable) so Traefik's `authResponseHeaders` always overwrite client-supplied values. Values are sanitized to `^[a-zA-Z0-9_.:-]+$` (CR/LF stripped) — keep identical to the `auth-context` libraries in `labs64.io-commons`.
 
 ## Repository layout
 
@@ -18,15 +18,16 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 1. **Never hardcode credentials** — env vars or K8s Secrets only.
 2. **Preserve `l64user`** (uid/gid 1064) in Dockerfiles.
-3. **Role mapping must be consistent** with OIDC provider role claims.
+3. **Auth-policy scopes must be consistent with OIDC provider claims** (`TOKEN_SCOPES_CLAIM_PATHS`).
 
 ## Auth proxy details
 
-- **Single-file app**: `traefik_authproxy.py`
+- **App layout** (no longer single-file): `traefik_authproxy.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory auth-policy table, OpenAPI-template matching) + `policy_sync.py` (k8s Service discovery + per-module auth-policy fetch).
 - **JWT verification**: `python-jose` with RS256. JWKS from OIDC provider via discovery URL.
-- **Role extraction**: `TOKEN_ROLES_CLAIM_PATHS` env var (comma-separated dot-paths, supports `{audience}` placeholder).
-- **Path matching**: longest-prefix against `role_mapping.yaml`. Paths with no roles or `["public"]` are public.
-- **Hot reload**: `POST /reload` reloads role mapping without restart.
+- **Scope extraction**: `TOKEN_SCOPES_CLAIM_PATHS` env var (comma-separated dot-paths, supports `{audience}` placeholder); union of the `scope` claim and Keycloak-style role claims.
+- **Path matching**: per-operation OpenAPI template matching from module `/.well-known/auth-policy` + static prefix policies (`STATIC_POLICY_FILE`). Module routes take priority; static prefixes (longest-prefix) are consulted only when no route template matches; no match at all fails closed (403).
+- **Hot reload**: `POST /reload` reloads the static policy file and triggers an immediate module auth-policy re-sync, without restart.
+- **Readiness**: `GET /health/ready` returns 503 until the first module auth-policy sync pass has completed (`PolicySync.ready()`); `GET /health` is the liveness probe.
 - **JWKS caching**: TTL-based (`JWKS_CACHE_TTL`, default 3600s). Prefetched on startup.
 
 ### Environment variables
@@ -36,10 +37,11 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 | `OIDC_URL` | `http://mock-oidc.tools.svc.cluster.local:8080` | OIDC provider base URL |
 | `OIDC_REALM` | `default` | OIDC realm |
 | `OIDC_AUDIENCE` | `account` | Expected JWT audience |
-| `TOKEN_ROLES_CLAIM_PATHS` | `realm_access.roles,resource_access.{audience}.roles` | JWT claim paths |
+| `TOKEN_SCOPES_CLAIM_PATHS` | `scope,realm_access.roles,resource_access.{audience}.roles` | JWT claim paths for scopes |
 | `TOKEN_TENANT_CLAIM_PATH` | `tenant` | JWT dot-path for the tenant identifier (`X-Auth-Tenant`) |
-| `ROLE_MAPPING_FILE` | `role_mapping.yaml` | Base role mapping |
-| `ROLE_MAPPING_DIR` | (empty) | Per-module role mapping fragments |
+| `STATIC_POLICY_FILE` | `static_policies.yaml` | Static prefix policies for non-OpenAPI surfaces (UI bundles) |
+| `POLICY_REFRESH_INTERVAL` | `30` | Periodic re-fetch interval for module auth policies (seconds) |
+| `POD_NAMESPACE` | (from serviceaccount namespace file, else `default`) | Namespace searched for `labs64.io/auth-policy=true` labeled Services |
 | `JWKS_CACHE_TTL` | `3600` | JWKS cache TTL (seconds) |
 
 ## Build, run, test
@@ -58,6 +60,8 @@ Tests: `pytest` in `tests/`. Local docs: `:8081/docs`.
 | Goal | Where |
 |------|-------|
 | JWT verification | `traefik_authproxy.py` → `verify_token()` |
-| Role extraction | `traefik_authproxy.py` → `extract_token_roles()` |
-| Path matching | `traefik_authproxy.py` → `get_required_roles()` |
-| Role mapping format | `sample_role_mapping.yaml` |
+| Scope extraction | `traefik_authproxy.py` → `extract_token_scopes()` |
+| `/auth` decision logic | `traefik_authproxy.py` → `authenticate()` |
+| Policy matching (route/static/conflict) | `policy_store.py` → `PolicyStore.match()` |
+| Module auth-policy discovery + fetch | `policy_sync.py` → `PolicySync` |
+| Static prefix policy format | `sample_static_policies.yaml` |

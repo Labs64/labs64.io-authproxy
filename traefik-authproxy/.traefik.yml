@@ -14,6 +14,5 @@ testData:
   OIDC_URL: http://mock-oidc.tools.svc.cluster.local:8080
   OIDC_REALM: labs64io
   OIDC_AUDIENCE: account
-  ROLE_MAPPING_FILE: /opt/application-config/role_mapping.yaml
   JWKS_CACHE_TTL: "3600"
   LOG_LEVEL: DEBUG
