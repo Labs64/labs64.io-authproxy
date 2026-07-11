@@ -196,10 +196,22 @@ app = FastAPI(
 )
 
 def _ecosystem_error_response(request: Request, status_code: int, message: str) -> JSONResponse:
-    try:
-        code_name = HTTPStatus(status_code).name
-    except ValueError:
-        code_name = "UNKNOWN_ERROR"
+    code_map = {
+        400: "VALIDATION_ERROR",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        409: "CONFLICT",
+        500: "INTERNAL_ERROR",
+        502: "PSP_ERROR",
+        503: "PUBLISH_FAILED"
+    }
+    code_name = code_map.get(status_code)
+    if not code_name:
+        try:
+            code_name = HTTPStatus(status_code).name
+        except ValueError:
+            code_name = "UNKNOWN_ERROR"
         
     trace_id = getattr(request.state, "correlation_id", "")
     content = {
