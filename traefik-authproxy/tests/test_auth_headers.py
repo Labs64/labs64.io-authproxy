@@ -9,8 +9,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import traefik_authproxy
 from traefik_authproxy import app, sanitize_header_value, _uuid7
+from policy_store import PolicyStore, StaticPolicy
 
-CONTRACT_HEADERS = ("X-Auth-User", "X-Auth-Roles", "X-Auth-Tenant", "X-Request-ID")
+CONTRACT_HEADERS = ("X-Auth-User", "X-Auth-Scopes", "X-Auth-Tenant", "X-Request-ID")
 
 
 # --- sanitize_header_value ---
@@ -37,8 +38,12 @@ def test_uuid7_is_valid_uuid_version_7():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "PROTECTED_PATHS", {"/checkout/api": ["ecommerce-role"]})
-    monkeypatch.setattr(traefik_authproxy, "PUBLIC_PATHS", ["/checkout/v3/api-docs"])
+    store = PolicyStore()
+    store.set_static([
+        StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",)),
+        StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=()),
+    ])
+    monkeypatch.setattr(traefik_authproxy, "STORE", store)
     return TestClient(app)
 
 
@@ -59,13 +64,13 @@ def test_public_path_emits_full_empty_contract(client):
             "X-Forwarded-Uri": "/checkout/v3/api-docs",
             # spoofing attempt: must be overwritten by the ACS's own values
             "X-Auth-User": "attacker",
-            "X-Auth-Roles": "admin-role",
+            "X-Auth-Scopes": "admin-role",
             "X-Auth-Tenant": "t_evil",
         },
     )
     assert response.status_code == 200
     assert response.headers["X-Auth-User"] == ""
-    assert response.headers["X-Auth-Roles"] == ""
+    assert response.headers["X-Auth-Scopes"] == ""
     assert response.headers["X-Auth-Tenant"] == "-"
     assert uuid.UUID(response.headers["X-Request-ID"])
 
@@ -77,7 +82,7 @@ def test_authenticated_request_emits_identity(client, valid_token):
     )
     assert response.status_code == 200
     assert response.headers["X-Auth-User"] == "jdoe"
-    assert response.headers["X-Auth-Roles"] == "ecommerce-role"
+    assert response.headers["X-Auth-Scopes"] == "ecommerce-role"
     assert response.headers["X-Auth-Tenant"] == "t_100"
     assert response.headers["X-Request-ID"]
 
@@ -146,9 +151,9 @@ def test_header_values_are_sanitized(client, monkeypatch):
     assert response.status_code == 200
     assert "\r" not in response.headers["X-Auth-User"]
     assert response.headers["X-Auth-Tenant"] == "t100"
-    # every emitted role obeys the value alphabet
-    for role in response.headers["X-Auth-Roles"].split(","):
-        assert role == sanitize_header_value(role)
+    # every emitted scope obeys the value alphabet
+    for scope in response.headers["X-Auth-Scopes"].split(","):
+        assert scope == sanitize_header_value(scope)
 
 
 def test_missing_token_on_protected_path_401(client):

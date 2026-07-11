@@ -28,7 +28,7 @@ def _make_record(msg: str) -> logging.LogRecord:
 
 # --- suppressed paths ---
 
-@pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/redoc"])
+@pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/redoc", "/health", "/health/ready"])
 def test_suppressed_paths(filt, path):
     record = _make_record(f'127.0.0.1:1234 - "GET {path} HTTP/1.1" 200 OK')
     assert filt.filter(record) is False
@@ -41,7 +41,7 @@ def test_suppressed_prefix(filt):
 
 # --- allowed paths ---
 
-@pytest.mark.parametrize("path", ["/auth", "/health", "/reload", "/docsadmin", "/not-docs"])
+@pytest.mark.parametrize("path", ["/auth", "/reload", "/docsadmin", "/not-docs"])
 def test_allowed_paths(filt, path):
     record = _make_record(f'127.0.0.1:1234 - "GET {path} HTTP/1.1" 200 OK')
     assert filt.filter(record) is True

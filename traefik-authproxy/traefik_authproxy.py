@@ -4,16 +4,18 @@ import secrets
 import time
 import uuid
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 
-import yaml
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from jose import jwt
 from jose.exceptions import JWTError, ExpiredSignatureError
+
+from policy_store import PolicyStore, load_static_policies
+from policy_sync import PolicySync
 
 # --- Caches ---
 DISCOVERY_CACHE: Dict[str, Any] = {}
@@ -29,19 +31,20 @@ OIDC_DISCOVERY_URL = os.getenv(
 )
 
 OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "account")
-# Comma-separated dot-paths into the JWT payload to collect roles/scopes from.
-# "{audience}" is replaced with OIDC_AUDIENCE. List values contribute items;
-# string values are whitespace-split (OAuth2 scp/scope style).
-TOKEN_ROLES_CLAIM_PATHS = os.getenv(
-    "TOKEN_ROLES_CLAIM_PATHS",
-    "realm_access.roles,resource_access.{audience}.roles",
+# Comma-separated dot-paths into the JWT payload to collect scopes from.
+# Default is the union of the standard OAuth2 "scope" claim and the
+# Keycloak-style role claims, so role-based tokens keep working while
+# per-operation OpenAPI scopes are adopted.
+TOKEN_SCOPES_CLAIM_PATHS = os.getenv(
+    "TOKEN_SCOPES_CLAIM_PATHS",
+    "scope,realm_access.roles,resource_access.{audience}.roles",
 )
 # Dot-path into the JWT payload for the tenant identifier.
 TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
-ROLE_MAPPING_FILE = os.getenv("ROLE_MAPPING_FILE", "role_mapping.yaml")
-# Directory with per-module role-mapping fragments (e.g. populated by a
-# k8s-sidecar from labeled ConfigMaps); merged on top of ROLE_MAPPING_FILE.
-ROLE_MAPPING_DIR = os.getenv("ROLE_MAPPING_DIR", "")
+# Static prefix policies for surfaces without an OpenAPI spec (UI bundles).
+STATIC_POLICY_FILE = os.getenv("STATIC_POLICY_FILE", "static_policies.yaml")
+# Periodic re-fetch interval for module auth policies (seconds).
+POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
@@ -58,9 +61,9 @@ app_logger.setLevel(numeric_level)
 
 
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
-# /openapi.json).  The health probe already suppresses readiness traffic; these
-# are the Swagger-UI assets that k8s liveness/readiness hit repeatedly.
-_QUIET_PATHS_RE = re.compile(r'"(?:GET|HEAD|POST)\s+/(?:docs|openapi\.json|redoc)\b')
+# /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and
+# the Swagger-UI assets are polled by tooling; neither is interesting signal.
+_QUIET_PATHS_RE = re.compile(r'"(?:GET|HEAD|POST)\s+/(?:docs|openapi\.json|redoc|health)\b')
 
 
 class _QuietPathsFilter(logging.Filter):
@@ -75,7 +78,7 @@ for _name in ("uvicorn.access", "uvicorn"):
 # Every 2xx from /auth carries the full set (empty / "-" when not applicable),
 # so Traefik's authResponseHeaders always overwrite anything a client sent.
 HEADER_AUTH_USER = "X-Auth-User"
-HEADER_AUTH_ROLES = "X-Auth-Roles"
+HEADER_AUTH_SCOPES = "X-Auth-Scopes"
 HEADER_AUTH_TENANT = "X-Auth-Tenant"
 HEADER_REQUEST_ID = "X-Request-ID"
 TENANT_NONE = "-"
@@ -120,14 +123,14 @@ def set_auth_headers(
     response: JSONResponse,
     request_id: str,
     user_id: str = "",
-    roles: Optional[List[str]] = None,
+    scopes: Optional[List[str]] = None,
     tenant: Optional[str] = None,
 ) -> JSONResponse:
     """Emit the complete trusted header set on a 2xx /auth response."""
-    sanitized_roles = sorted(r for r in (sanitize_header_value(role) for role in (roles or [])) if r)
+    sanitized_scopes = sorted(s for s in (sanitize_header_value(scope) for scope in (scopes or [])) if s)
     sanitized_tenant = sanitize_header_value(tenant)
     response.headers[HEADER_AUTH_USER] = sanitize_header_value(user_id)
-    response.headers[HEADER_AUTH_ROLES] = ",".join(sanitized_roles)
+    response.headers[HEADER_AUTH_SCOPES] = ",".join(sanitized_scopes)
     response.headers[HEADER_AUTH_TENANT] = sanitized_tenant if sanitized_tenant else TENANT_NONE
     response.headers[HEADER_REQUEST_ID] = request_id
     return response
@@ -136,98 +139,55 @@ def set_auth_headers(
 class AuthResponse(BaseModel):
     message: str
     user_id: Optional[str] = None
-    roles: List[str] = []
+    scopes: List[str] = []
 
 class HealthResponse(BaseModel):
     status: str
     jwks_cached: bool
-    protected_paths: int
-    public_paths: int
+    ready: bool
+    modules: int
+    routes: int
+    conflicts: int
+    static_policies: int
 
 class ReloadResponse(BaseModel):
     message: str
-    protected_paths: int
-    public_paths: int
+    modules: int
+    routes: int
+    conflicts: int
+    static_policies: int
 
-# --- Load Role Mapping and Public Paths ---
-def _parse_mapping_file(file_path: str) -> Dict[str, Any]:
-    """Parse one role-mapping YAML file into a raw dict."""
-    with open(file_path, "r") as f:
-        raw = yaml.safe_load(f) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"{file_path}: role mapping must be a dictionary")
-    return raw
-
-
-def load_role_mappings(file_path: str = "", dir_path: str = "") -> Tuple[Dict[str, List[str]], List[str]]:
-    """Load and merge role mappings from a base file and a fragments directory.
-
-    Fragment files (*.yaml / *.yml) are merged in sorted filename order after
-    the base file; later keys override earlier ones. A path with no roles, an
-    empty list, or ["public"] is treated as public.
-    """
-    sources: List[str] = []
-    if file_path and os.path.isfile(file_path):
-        sources.append(file_path)
-    if dir_path and os.path.isdir(dir_path):
-        sources.extend(
-            sorted(
-                os.path.join(dir_path, fn)
-                for fn in os.listdir(dir_path)
-                if fn.endswith((".yaml", ".yml"))
-            )
-        )
-
-    raw_mapping: Dict[str, Any] = {}
-    for src in sources:
-        try:
-            raw_mapping.update(_parse_mapping_file(src))
-        except Exception as e:
-            app_logger.warning(f"load_role_mappings::Skipping {src}: {e}")
-
-    protected_paths: Dict[str, List[str]] = {}
-    public_paths: List[str] = []
-    for path, roles in raw_mapping.items():
-        if roles in (None, [], ["public"]):
-            public_paths.append(path)
-            app_logger.debug(f"load_role_mappings::Detected public path: {path}")
-        else:
-            protected_paths[path] = roles
-
-    app_logger.info(
-        f"Role mapping loaded from {len(sources)} file(s): "
-        f"{len(protected_paths)} protected paths, {len(public_paths)} public paths"
-    )
-    return protected_paths, public_paths
-
-
-def load_role_mapping(file_path: str) -> Tuple[Dict[str, List[str]], List[str]]:
-    """Backward-compatible single-file loader."""
-    return load_role_mappings(file_path=file_path)
-
-PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
+# --- Policy Store ---
+STORE = PolicyStore()
+STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
+POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
 
 # --- Startup log ---
 app_logger.info(
     f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
-    f"role-claim paths: {TOKEN_ROLES_CLAIM_PATHS}, JWKS cache TTL: {JWKS_CACHE_TTL}s"
+    f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, static policy file: {STATIC_POLICY_FILE}, "
+    f"JWKS cache TTL: {JWKS_CACHE_TTL}s"
 )
 
-# --- Lifespan (prefetch JWKS on startup) ---
+# --- Lifespan (prefetch JWKS + start auth-policy discovery on startup) ---
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Prefetch JWKS keys on startup so the first request is not delayed."""
+    """Prefetch JWKS keys and start auth-policy discovery on startup."""
     try:
         get_jwks()
         app_logger.info("JWKS prefetched successfully during startup")
     except Exception as e:
         app_logger.warning(f"JWKS prefetch failed (will retry on first request): {e}")
+    POLICY_SYNC.start()
     yield
+    POLICY_SYNC.stop()
 
 # --- App Initialization ---
 app = FastAPI(
     title="Traefik Auth (M2M) Middleware",
-    description="ForwardAuth service to verify OIDC JWTs and enforce RBAC based on URI-to-role mapping",
+    description="ForwardAuth service to verify OIDC JWTs and enforce OpenAPI-derived "
+                "auth policies (public/tenant/scopes) discovered from module "
+                "/.well-known/auth-policy endpoints",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -297,7 +257,7 @@ def verify_token(token: str) -> Dict[str, Any]:
         app_logger.error("verify_token::Unexpected error", exc_info=True)
         raise HTTPException(status_code=500, detail="Token verification failed")
 
-# --- Role Extractor ---
+# --- Scope Extractor ---
 def _resolve_claim_path(payload: Dict[str, Any], path: str) -> Any:
     """Walk a dot-path into a nested dict; returns None when any segment is missing."""
     node: Any = payload
@@ -308,34 +268,18 @@ def _resolve_claim_path(payload: Dict[str, Any], path: str) -> Any:
     return node
 
 
-def extract_token_roles(payload: Dict[str, Any]) -> List[str]:
-    roles: set[str] = set()
-    for raw_path in TOKEN_ROLES_CLAIM_PATHS.split(","):
+def extract_token_scopes(payload: Dict[str, Any]) -> List[str]:
+    scopes: set[str] = set()
+    for raw_path in TOKEN_SCOPES_CLAIM_PATHS.split(","):
         path = raw_path.strip().replace("{audience}", OIDC_AUDIENCE)
         if not path:
             continue
         value = _resolve_claim_path(payload, path)
         if isinstance(value, list):
-            roles.update(str(v) for v in value)
+            scopes.update(str(v) for v in value)
         elif isinstance(value, str):
-            roles.update(value.split())
-    return list(roles)
-
-# --- Path Role Matcher ---
-def get_required_roles(path: str) -> List[str]:
-    """Find required roles for a path using longest-prefix matching."""
-    longest_match = ""
-    required_roles: List[str] = []
-
-    for prefix, roles in PROTECTED_PATHS.items():
-        if path.startswith(prefix) and len(prefix) > len(longest_match):
-            longest_match = prefix
-            required_roles = roles
-
-    return required_roles
-
-def is_public_path(path: str) -> bool:
-    return any(path.startswith(pub) for pub in PUBLIC_PATHS)
+            scopes.update(value.split())
+    return list(scopes)
 
 # --- Correlation ID Middleware ---
 @app.middleware("http")
@@ -352,32 +296,33 @@ async def correlation_id_middleware(request: Request, call_next):
     response.headers["X-Correlation-ID"] = correlation_id
     return response
 
-# --- Health Check Endpoint ---
+# --- Health Check Endpoints ---
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health():
-    """Health check endpoint consistent with ecosystem convention."""
-    return HealthResponse(
-        status="ok",
-        jwks_cached=bool(JWKS_CACHE),
-        protected_paths=len(PROTECTED_PATHS),
-        public_paths=len(PUBLIC_PATHS),
-    )
+    """Liveness check endpoint consistent with ecosystem convention."""
+    stats = STORE.stats()
+    return HealthResponse(status="ok", jwks_cached=bool(JWKS_CACHE),
+                          ready=POLICY_SYNC.ready(), **stats)
+
+@app.get("/health/ready", tags=["Health"])
+async def health_ready():
+    """Readiness check: 503 until the first auth-policy sync pass has completed."""
+    if not POLICY_SYNC.ready():
+        raise HTTPException(status_code=503, detail="auth-policy sync not completed")
+    return {"status": "ready"}
 
 # --- Reload Endpoint ---
 @app.post("/reload", response_model=ReloadResponse, tags=["Admin"])
-async def reload_role_mapping():
-    """Reload role mapping from the configured YAML file without restarting.
+async def reload_policies():
+    """Reload static prefix policies from disk and trigger a module policy re-sync.
 
-    Useful when the role mapping ConfigMap is updated in Kubernetes.
+    Useful when the STATIC_POLICY_FILE ConfigMap is updated in Kubernetes.
     """
-    global PROTECTED_PATHS, PUBLIC_PATHS
-    PROTECTED_PATHS, PUBLIC_PATHS = load_role_mappings(ROLE_MAPPING_FILE, ROLE_MAPPING_DIR)
-    app_logger.info("Role mapping reloaded via /reload endpoint")
-    return ReloadResponse(
-        message="Role mapping reloaded successfully",
-        protected_paths=len(PROTECTED_PATHS),
-        public_paths=len(PUBLIC_PATHS),
-    )
+    STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
+    POLICY_SYNC.trigger_refresh()
+    app_logger.info("Static policies reloaded and module auth-policy refresh triggered via /reload endpoint")
+    stats = STORE.stats()
+    return ReloadResponse(message="Policies reloaded successfully", **stats)
 
 # --- Authentication Endpoint ---
 @app.get("/auth", response_model=AuthResponse, tags=["Auth"])
@@ -385,65 +330,64 @@ async def reload_role_mapping():
 async def authenticate(request: Request):
     """Authenticate and authorize a request forwarded by Traefik.
 
-    Validates the JWT token from the Authorization header, extracts user roles,
-    and checks them against the configured path/role mapping. Every 2xx response
-    carries the full trusted header set (empty / "-" when not applicable)
-    so Traefik's authResponseHeaders always overwrite client-supplied values:
+    Matches the forwarded method/path against the policy store (module routes
+    discovered from /.well-known/auth-policy, falling back to static prefix
+    policies), then verifies the JWT and checks scopes/tenant per the matched
+    policy. Every 2xx response carries the full trusted header set (empty / "-"
+    when not applicable) so Traefik's authResponseHeaders always overwrite
+    client-supplied values:
     - X-Auth-User: preferred_username | sub claim from the JWT
-    - X-Auth-Roles: comma-separated list of roles (may be empty)
+    - X-Auth-Scopes: comma-separated list of scopes (may be empty)
     - X-Auth-Tenant: tenant claim ("-" for tenant-less calls)
     - X-Request-ID: echoed if well-formed, otherwise generated (UUIDv7)
     """
     forwarded_uri = request.headers.get("X-Forwarded-Uri", "/")
-    app_logger.debug(f"Received request on forwarded URI: {forwarded_uri}")
-
+    forwarded_method = request.headers.get("X-Forwarded-Method", request.method)
+    path = forwarded_uri.split("?", 1)[0]
     request_id = resolve_request_id(request)
 
-    if is_public_path(forwarded_uri):
-        app_logger.debug(f"Public access granted to: {forwarded_uri}")
+    kind, policy = STORE.match(forwarded_method, path)
+
+    if kind == "none":
+        app_logger.warning("Auth rejected [no-policy] — %s %s", forwarded_method, path)
+        raise HTTPException(status_code=403, detail=f"No auth policy configured for: {path}")
+    if kind == "conflict":
+        app_logger.error("Auth rejected [policy-conflict] — %s %s", forwarded_method, path)
+        raise HTTPException(status_code=403, detail="Conflicting auth policy")
+
+    if policy.public:
+        app_logger.debug("Public access granted to: %s", path)
         response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
         return set_auth_headers(response, request_id)
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        app_logger.warning(f"Auth rejected — missing/malformed token for {forwarded_uri}")
+        app_logger.warning("Auth rejected [no-token] — %s %s", forwarded_method, path)
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
 
     token = auth_header.split(" ", 1)[1]
     payload = verify_token(token)
-    user_roles = extract_token_roles(payload)
+    token_scopes = extract_token_scopes(payload)
+    tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
 
-    if not user_roles:
-        app_logger.warning(f"Auth rejected — token has no roles for {forwarded_uri}")
-        raise HTTPException(status_code=403, detail="Token contains no roles")
+    if kind == "route" and policy.tenant_required and not tenant:
+        # Presence-only gate: tenant validity stays a module concern.
+        app_logger.warning("Auth rejected [tenant-missing] — %s %s", forwarded_method, path)
+        raise HTTPException(status_code=403, detail="Tenant claim required")
 
-    required_roles = get_required_roles(forwarded_uri)
-    if not required_roles:
-        app_logger.warning(f"Auth rejected — no access control configured for {forwarded_uri}")
-        raise HTTPException(status_code=403, detail=f"No access control configured for: {forwarded_uri}")
-
-    if not set(user_roles).intersection(required_roles):
+    required = policy.scopes
+    if required and not set(token_scopes).intersection(required):
         app_logger.warning(
-            f"Auth rejected — insufficient roles for {forwarded_uri} "
-            f"(has: {user_roles}, needs: {required_roles})"
-        )
-        raise HTTPException(status_code=403, detail=f"Insufficient roles. Required: {required_roles}")
+            "Auth rejected [scope-mismatch] — %s %s (has: %s, needs any of: %s)",
+            forwarded_method, path, token_scopes, list(required))
+        raise HTTPException(status_code=403, detail=f"Insufficient scopes. Required any of: {list(required)}")
 
     user_id = payload.get("preferred_username") or payload.get("sub")
     if not user_id:
-        # Client-credentials token without a subject: map the client to a
-        # service principal (X-Auth-User: svc:<name>).
         client = payload.get("azp") or payload.get("client_id")
         user_id = f"svc:{client}" if client else None
-    tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
-    app_logger.info(f"Access granted to user {user_id} for path {forwarded_uri}")
+    app_logger.info("Access granted to user %s for %s %s", user_id, forwarded_method, path)
 
-    # Return identity headers that Traefik can forward to upstream services
-    response = JSONResponse(
-        content=AuthResponse(
-            message="Authentication successful",
-            user_id=user_id,
-            roles=user_roles,
-        ).model_dump()
-    )
-    return set_auth_headers(response, request_id, user_id=user_id, roles=user_roles, tenant=tenant)
+    response = JSONResponse(content=AuthResponse(
+        message="Authentication successful", user_id=user_id, scopes=token_scopes).model_dump())
+    return set_auth_headers(response, request_id, user_id=user_id, scopes=token_scopes, tenant=tenant)
