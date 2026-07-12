@@ -16,9 +16,10 @@ WORKDIR /home/${USER_NAME}
 # Copy the requirements file into the container at the working directory
 COPY --chown=${USER_NAME}:${GROUP_NAME} requirements.txt .
 
-# Copy the FastAPI application (no longer single-file: policy_store.py holds
-# the in-memory auth-policy table, policy_sync.py the k8s discovery/fetch loop)
-COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py .
+# Copy the FastAPI application (no longer single-file: policy_store.py holds the
+# in-memory auth-policy table, policy_sync.py the k8s discovery/fetch loop,
+# policy_bundle.py the signed-bundle policy source used in provenance mode)
+COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py .
 
 # Install any needed packages specified in requirements.txt
 RUN python -m pip install --upgrade pip && \

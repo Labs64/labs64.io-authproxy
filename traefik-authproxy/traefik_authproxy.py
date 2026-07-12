@@ -19,6 +19,7 @@ from jose.exceptions import JWTError, ExpiredSignatureError
 
 from policy_store import PolicyStore, load_static_policies
 from policy_sync import PolicySync
+from policy_bundle import PolicyBundleLoader
 
 # --- Caches ---
 DISCOVERY_CACHE: Dict[str, Any] = {}
@@ -48,6 +49,11 @@ TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 STATIC_POLICY_FILE = os.getenv("STATIC_POLICY_FILE", "static_policies.yaml")
 # Periodic re-fetch interval for module auth policies (seconds).
 POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
+# Provenance mode (RFC-05 P0): when set, module policies come from a verified,
+# cosign-signed OCI bundle mounted here (by an init container that pulls by
+# digest + verifies), NOT from live in-cluster discovery. Setting this disables
+# the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
+POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
@@ -163,13 +169,21 @@ class ReloadResponse(BaseModel):
 # --- Policy Store ---
 STORE = PolicyStore()
 STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
-POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
+# Policy source: signed bundle (provenance-safe, RFC-05 P0) when POLICY_BUNDLE_DIR
+# is set, else legacy live-pod discovery. Both expose start/stop/ready/
+# trigger_refresh, so the rest of the app is source-agnostic.
+if POLICY_BUNDLE_DIR:
+    POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
+    _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
+else:
+    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
+    _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
 
 # --- Startup log ---
 app_logger.info(
     f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
     f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, static policy file: {STATIC_POLICY_FILE}, "
-    f"JWKS cache TTL: {JWKS_CACHE_TTL}s"
+    f"policy source: {_POLICY_SOURCE}, JWKS cache TTL: {JWKS_CACHE_TTL}s"
 )
 
 # --- Lifespan (prefetch JWKS + start auth-policy discovery on startup) ---
