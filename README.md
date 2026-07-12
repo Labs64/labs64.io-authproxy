@@ -9,7 +9,7 @@
 
 Key responsibilities of the API Gateway stack (Traefik + gateway-common + traefik-authproxy):
 
-- Request Routing: module-owned Traefik IngressRoutes direct requests to backend services.
+- Request Routing: module-owned Gateway API HTTPRoutes (Traefik as the Gateway implementation) direct requests to backend services.
 - Authentication and Authorization: ForwardAuth middleware verifies OIDC/JWT (M2M) tokens and enforces OpenAPI-derived auth policies via traefik-authproxy.
 - Rate Limiting and Throttling: per-user rate limit middleware protects backends from abuse.
 - Security Headers: standard security headers applied at the gateway.
