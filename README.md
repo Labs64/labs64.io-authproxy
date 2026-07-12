@@ -18,4 +18,4 @@ Key responsibilities of the API Gateway stack (Traefik + gateway-common + traefi
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Labs64/labs64.io-gateway&type=Date)](https://www.star-history.com/#Labs64/labs64.io-gateway&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Labs64/labs64.io-authproxy&type=Date)](https://www.star-history.com/#Labs64/labs64.io-authproxy&Date)
