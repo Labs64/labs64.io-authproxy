@@ -51,6 +51,9 @@ class PolicyBundleLoader:
         self._ready = False
         self.loaded_modules: List[str] = []
         self.bundle_meta: Dict[str, object] = {}
+        # RFC-05 P2: generated Tier-1 edge Cedar policy text per module (from
+        # the manifest's optional "cedar" field). Older bundles have none.
+        self.cedar_policies: Dict[str, str] = {}
 
     # -- lifecycle (mirrors PolicySync) --------------------------------------
     def start(self) -> None:
@@ -108,6 +111,7 @@ class PolicyBundleLoader:
             raise BundleError("manifest 'modules' must be a list")
 
         loaded: List[str] = []
+        cedar_policies: Dict[str, str] = {}
         for entry in modules:
             if not isinstance(entry, dict):
                 raise BundleError(f"malformed module entry: {entry!r}")
@@ -127,11 +131,20 @@ class PolicyBundleLoader:
                 routes = parse_policy_document(name, base_path, doc)
             except PolicyValidationError as e:
                 raise BundleError(f"{name}: invalid policy: {e}") from e
+            rel_cedar = entry.get("cedar")
+            if rel_cedar:
+                cedar_path = os.path.join(self.bundle_dir, rel_cedar)
+                try:
+                    with open(cedar_path) as f:
+                        cedar_policies[name] = f.read()
+                except OSError as e:
+                    raise BundleError(f"{name}: unreadable cedar policy {rel_cedar!r}: {e}") from e
             self.store.set_module(name, routes)
             loaded.append(name)
             if result is not None:
                 result[name] = "ok"
-            logger.info("Bundle policy loaded for %s: %d routes", name, len(routes))
+            logger.info("Bundle policy loaded for %s: %d routes%s", name, len(routes),
+                        ", cedar" if name in cedar_policies else "")
 
         # Drop any module that vanished from a newer bundle (hot-swap hygiene).
         for module in self.store.modules():
@@ -140,6 +153,7 @@ class PolicyBundleLoader:
                 logger.info("Module %s absent from bundle — dropping its routes", module)
 
         self.loaded_modules = loaded
+        self.cedar_policies = cedar_policies
         self.bundle_meta = {
             "version": version,
             "generatedAt": manifest.get("generatedAt"),
@@ -147,3 +161,9 @@ class PolicyBundleLoader:
             "modules": loaded,
         }
         logger.info("Policy bundle loaded: %d module(s) — %s", len(loaded), ", ".join(loaded))
+
+    def combined_cedar(self) -> str:
+        """All modules' generated edge Cedar policies as one policy-set text
+        (the edge PDP evaluates a single set; @id annotations stay unique
+        because they are prefixed with the module name)."""
+        return "\n".join(self.cedar_policies[m] for m in sorted(self.cedar_policies))

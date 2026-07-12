@@ -14,14 +14,23 @@ MODULE_DOC = {"version": 1, "routes": [
 ]}
 
 
-def _write_bundle(root, modules):
-    """modules: {name: (base_path, doc)} → writes manifest + module docs."""
+def _write_bundle(root, modules, cedar=None):
+    """modules: {name: (base_path, doc)} → writes manifest + module docs.
+
+    cedar: optional {name: cedar_text} — writes modules/<name>.cedar and adds
+    the manifest "cedar" field (RFC-05 P2 bundles).
+    """
     (root / "modules").mkdir()
     entries = []
     for name, (base_path, doc) in modules.items():
         rel = f"modules/{name}.json"
         (root / rel).write_text(json.dumps(doc))
-        entries.append({"name": name, "basePath": base_path, "file": rel})
+        entry = {"name": name, "basePath": base_path, "file": rel}
+        if cedar and name in cedar:
+            cedar_rel = f"modules/{name}.cedar"
+            (root / cedar_rel).write_text(cedar[name])
+            entry["cedar"] = cedar_rel
+        entries.append(entry)
     manifest = {"version": 1, "generatedAt": "2026-07-12T00:00:00Z", "modules": entries}
     (root / "manifest.json").write_text(json.dumps(manifest))
     return root
@@ -37,6 +46,39 @@ def test_load_populates_store(tmp_path):
     kind, policy = store.match("POST", "/auditflow/api/v1/audit/publish")
     assert kind == "route"
     assert policy.scopes == ("audit-event:write",)
+
+
+CEDAR_TEXT = '@id("auditflow::publish")\npermit(principal, action, resource);\n'
+
+
+def test_load_collects_cedar_policies(tmp_path):
+    _write_bundle(tmp_path, {"auditflow": ("/auditflow/api/v1", MODULE_DOC)},
+                  cedar={"auditflow": CEDAR_TEXT})
+    loader = PolicyBundleLoader(PolicyStore(), str(tmp_path))
+    loader.start()
+    assert loader.ready() is True
+    assert loader.cedar_policies == {"auditflow": CEDAR_TEXT}
+    assert CEDAR_TEXT in loader.combined_cedar()
+
+
+def test_bundle_without_cedar_stays_compatible(tmp_path):
+    _write_bundle(tmp_path, {"auditflow": ("/auditflow/api/v1", MODULE_DOC)})
+    loader = PolicyBundleLoader(PolicyStore(), str(tmp_path))
+    loader.start()
+    assert loader.ready() is True
+    assert loader.cedar_policies == {}
+    assert loader.combined_cedar() == ""
+
+
+def test_unreadable_cedar_file_raises(tmp_path):
+    _write_bundle(tmp_path, {"auditflow": ("/auditflow/api/v1", MODULE_DOC)})
+    # manifest references a cedar file that does not exist on disk
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["modules"][0]["cedar"] = "modules/auditflow.cedar"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    loader = PolicyBundleLoader(PolicyStore(), str(tmp_path))
+    with pytest.raises(BundleError, match="unreadable cedar"):
+        loader.load()
 
 
 def test_missing_manifest_fails_closed(tmp_path):

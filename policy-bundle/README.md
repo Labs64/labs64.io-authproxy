@@ -13,11 +13,17 @@ can no longer author the policy that governs it.
 
 ```
 OpenAPI x-labs64-auth ──(commons OpenApiAuthPreprocessor)──▶ modules/<name>.json
-        │
+        │                                                    modules/<name>.cedar   (RFC-05 P2: generated
+        │                                                        │                   Tier-1 edge Cedar,
+        │                                                        └─ cedar validate   vs the ONE commons schema)
         └─ manifest.json  ──(oras push)──▶ OCI registry ──(cosign sign, by digest)──▶ signed bundle
                                                                          │
    ACS init: oras pull @digest ──▶ cosign verify (fail-closed) ──▶ /bundle ──▶ policy_bundle.py
 ```
+
+Since P2 each module entry also carries `"cedar": "modules/<name>.cedar"` — the
+per-operation edge Cedar policy set the ACS evaluates in-process (cedarpy) in
+`CEDAR_MODE=shadow|enforce`. Older bundles without cedar files still load.
 
 ## Build, sign, push
 
