@@ -37,6 +37,27 @@ class EdgeDecision(NamedTuple):
     error: Optional[str]
 
 
+def validate_policy_text(policies_text: str) -> None:
+    """Raise ValueError when the policy text does not parse as a Cedar set.
+
+    cedarpy has no separate parse entry point; a bad policy set turns an
+    authorization call into Decision.NoDecision with diagnostics.errors, so a
+    probe request is evaluated to surface parse errors.
+    """
+    import cedarpy
+
+    probe = {
+        "principal": f'Labs64IO::User::"{ANONYMOUS_USER}"',
+        "action": 'Labs64IO::Action::"invoke"',
+        "resource": 'Labs64IO::ApiOperation::"__probe__::__probe__"',
+        "context": {"scopes": [], "requestId": "load-probe"},
+    }
+    result = cedarpy.is_authorized(probe, policies_text, [])
+    errors = list(getattr(result.diagnostics, "errors", []) or [])
+    if result.decision == cedarpy.Decision.NoDecision or errors:
+        raise ValueError(f"edge cedar policy set failed to parse: {errors}")
+
+
 class CedarEdgeEngine:
     """Holds the combined generated edge policy set and evaluates requests."""
 
@@ -51,23 +72,10 @@ class CedarEdgeEngine:
     def load(self, policies_text: str) -> None:
         """Install (or replace) the edge policy set.
 
-        Raises on malformed policy text so a bad bundle is rejected loudly at
-        load time instead of failing per-request.
+        Raises on malformed policy text so a bad policy source is rejected
+        loudly at load time instead of failing per-request.
         """
-        import cedarpy
-
-        probe = {
-            "principal": f'Labs64IO::User::"{ANONYMOUS_USER}"',
-            "action": 'Labs64IO::Action::"invoke"',
-            "resource": 'Labs64IO::ApiOperation::"__probe__::__probe__"',
-            "context": {"scopes": [], "requestId": "load-probe"},
-        }
-        # cedarpy has no separate parse entry point; a bad policy set turns an
-        # authorization call into Decision.NoDecision with diagnostics.errors.
-        result = cedarpy.is_authorized(probe, policies_text, [])
-        errors = list(getattr(result.diagnostics, "errors", []) or [])
-        if result.decision == cedarpy.Decision.NoDecision or errors:
-            raise ValueError(f"edge cedar policy set failed to parse: {errors}")
+        validate_policy_text(policies_text)
         with self._lock:
             self._policies = policies_text
         logger.info("Cedar edge policy set loaded (%d chars)", len(policies_text))

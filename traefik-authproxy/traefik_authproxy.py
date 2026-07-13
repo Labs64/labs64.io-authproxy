@@ -56,14 +56,17 @@ POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
 # the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
 POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
 # Cedar edge tier (RFC-05 P2): "off" | "shadow" | "enforce".
+#   off     — legacy auth-policy.json decision only.
 #   shadow  — evaluate the generated edge Cedar policies on every module-route
 #             request and LOG agreement with the legacy decision; behavior
 #             unchanged. This is the mandatory pre-enforcement diff.
 #   enforce — Cedar IS the decision for module routes (legacy public/tenant/
 #             scope matching retired); static-prefix routes stay legacy until
 #             those surfaces adopt OpenAPI (see staticPolicies TODO).
-# Requires bundle mode (POLICY_BUNDLE_DIR) — the cedar policies ride the same
-# signed bundle; without it the mode degrades to "off" with a warning.
+# This is the declarative auth-policy.json ↔ Cedar engine switch. The cedar
+# policies arrive over whichever policy source is active: inside the signed
+# bundle (POLICY_BUNDLE_DIR) or, under live discovery, from each module's
+# /.well-known/auth-policy.cedar — the same distribution as auth-policy.json.
 CEDAR_MODE = os.getenv("CEDAR_MODE", "shadow").strip().lower()
 
 # JWKS cache TTL in seconds (default: 1 hour).
@@ -185,34 +188,33 @@ STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
 # Policy source: signed bundle (provenance-safe, RFC-05 P0) when POLICY_BUNDLE_DIR
 # is set, else legacy live-pod discovery. Both expose start/stop/ready/
 # trigger_refresh, so the rest of the app is source-agnostic.
-if POLICY_BUNDLE_DIR:
-    POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
-    _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
-else:
-    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
-    _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
-
 # --- Cedar edge PDP (RFC-05 P2) ---
 CEDAR_ENGINE = CedarEdgeEngine()
 if CEDAR_MODE not in ("off", "shadow", "enforce"):
     app_logger.warning("Unknown CEDAR_MODE %r — falling back to 'shadow'", CEDAR_MODE)
     CEDAR_MODE = "shadow"
-if CEDAR_MODE != "off" and not POLICY_BUNDLE_DIR:
-    app_logger.warning(
-        "CEDAR_MODE=%s requires the signed policy bundle (POLICY_BUNDLE_DIR); "
-        "cedar evaluation is effectively OFF under live discovery", CEDAR_MODE)
+
+if POLICY_BUNDLE_DIR:
+    POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
+    _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
+else:
+    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL,
+                             fetch_cedar=CEDAR_MODE != "off")
+    _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
 
 
-def _load_cedar_from_bundle() -> None:
-    """(Re)load the combined generated edge Cedar set from the verified bundle.
+def _load_cedar_policies() -> None:
+    """(Re)load the combined generated edge Cedar set from the active policy
+    source (signed bundle or live discovery — both expose combined_cedar()).
 
     Fail closed: a load failure leaves the engine unloaded, which enforce mode
     turns into deny (and shadow logs as an error mismatch)."""
-    if CEDAR_MODE == "off" or not POLICY_BUNDLE_DIR:
+    if CEDAR_MODE == "off":
         return
     text = POLICY_SYNC.combined_cedar()
     if not text:
-        app_logger.warning("CEDAR_MODE=%s but the bundle carries no cedar policies", CEDAR_MODE)
+        app_logger.warning("CEDAR_MODE=%s but the policy source carries no cedar policies",
+                           CEDAR_MODE)
         return
     try:
         CEDAR_ENGINE.load(text)
@@ -220,6 +222,12 @@ def _load_cedar_from_bundle() -> None:
                         CEDAR_MODE, ", ".join(sorted(POLICY_SYNC.cedar_policies)))
     except Exception as e:  # noqa: BLE001 — keep serving; enforce fails closed per-request
         app_logger.error("Cedar edge policy load failed (mode=%s): %s", CEDAR_MODE, e)
+
+
+# Live discovery refreshes in a background thread — reload the engine whenever
+# a refresh pass changed the cedar set (bundle mode reloads via /reload only).
+if isinstance(POLICY_SYNC, PolicySync):
+    POLICY_SYNC.on_cedar_update = _load_cedar_policies
 
 # --- Startup log ---
 app_logger.info(
@@ -238,7 +246,7 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         app_logger.warning(f"JWKS prefetch failed (will retry on first request): {e}")
     POLICY_SYNC.start()
-    _load_cedar_from_bundle()
+    _load_cedar_policies()
     yield
     POLICY_SYNC.stop()
 
@@ -418,7 +426,7 @@ async def reload_policies():
     """
     STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
     POLICY_SYNC.trigger_refresh()
-    _load_cedar_from_bundle()
+    _load_cedar_policies()
     app_logger.info("Static policies reloaded and module auth-policy refresh triggered via /reload endpoint")
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)
@@ -476,7 +484,7 @@ async def authenticate(request: Request):
 
     # Cedar edge tier applies to module routes only; static prefixes stay on
     # the legacy check until those surfaces adopt OpenAPI (staticPolicies TODO).
-    cedar_applies = kind == "route" and CEDAR_MODE != "off" and POLICY_BUNDLE_DIR
+    cedar_applies = kind == "route" and CEDAR_MODE != "off"
 
     if policy.public:
         if cedar_applies:

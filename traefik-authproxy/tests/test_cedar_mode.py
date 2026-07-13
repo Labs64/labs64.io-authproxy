@@ -64,7 +64,10 @@ def cedar_app(monkeypatch):
     engine.load(CEDAR_POLICIES)
     monkeypatch.setattr(traefik_authproxy, "STORE", store)
     monkeypatch.setattr(traefik_authproxy, "CEDAR_ENGINE", engine)
-    monkeypatch.setattr(traefik_authproxy, "POLICY_BUNDLE_DIR", "/bundle")
+    # No POLICY_BUNDLE_DIR: cedar must apply under live discovery too (the
+    # policies arrive via /.well-known/auth-policy.cedar) — the whole suite
+    # below runs bundle-less on purpose.
+    monkeypatch.setattr(traefik_authproxy, "POLICY_BUNDLE_DIR", "")
     return TestClient(app)
 
 
