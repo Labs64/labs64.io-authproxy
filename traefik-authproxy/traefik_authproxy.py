@@ -20,6 +20,7 @@ from jose.exceptions import JWTError, ExpiredSignatureError
 from policy_store import PolicyStore, load_static_policies
 from policy_sync import PolicySync
 from policy_bundle import PolicyBundleLoader
+from cedar_edge import CedarEdgeEngine
 
 # --- Caches ---
 DISCOVERY_CACHE: Dict[str, Any] = {}
@@ -54,6 +55,16 @@ POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
 # digest + verifies), NOT from live in-cluster discovery. Setting this disables
 # the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
 POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
+# Cedar edge tier (RFC-05 P2): "off" | "shadow" | "enforce".
+#   shadow  — evaluate the generated edge Cedar policies on every module-route
+#             request and LOG agreement with the legacy decision; behavior
+#             unchanged. This is the mandatory pre-enforcement diff.
+#   enforce — Cedar IS the decision for module routes (legacy public/tenant/
+#             scope matching retired); static-prefix routes stay legacy until
+#             those surfaces adopt OpenAPI (see staticPolicies TODO).
+# Requires bundle mode (POLICY_BUNDLE_DIR) — the cedar policies ride the same
+# signed bundle; without it the mode degrades to "off" with a warning.
+CEDAR_MODE = os.getenv("CEDAR_MODE", "shadow").strip().lower()
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
@@ -158,6 +169,8 @@ class HealthResponse(BaseModel):
     routes: int
     conflicts: int
     static_policies: int
+    cedar_mode: str
+    cedar_loaded: bool
 
 class ReloadResponse(BaseModel):
     message: str
@@ -179,6 +192,35 @@ else:
     POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
     _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
 
+# --- Cedar edge PDP (RFC-05 P2) ---
+CEDAR_ENGINE = CedarEdgeEngine()
+if CEDAR_MODE not in ("off", "shadow", "enforce"):
+    app_logger.warning("Unknown CEDAR_MODE %r — falling back to 'shadow'", CEDAR_MODE)
+    CEDAR_MODE = "shadow"
+if CEDAR_MODE != "off" and not POLICY_BUNDLE_DIR:
+    app_logger.warning(
+        "CEDAR_MODE=%s requires the signed policy bundle (POLICY_BUNDLE_DIR); "
+        "cedar evaluation is effectively OFF under live discovery", CEDAR_MODE)
+
+
+def _load_cedar_from_bundle() -> None:
+    """(Re)load the combined generated edge Cedar set from the verified bundle.
+
+    Fail closed: a load failure leaves the engine unloaded, which enforce mode
+    turns into deny (and shadow logs as an error mismatch)."""
+    if CEDAR_MODE == "off" or not POLICY_BUNDLE_DIR:
+        return
+    text = POLICY_SYNC.combined_cedar()
+    if not text:
+        app_logger.warning("CEDAR_MODE=%s but the bundle carries no cedar policies", CEDAR_MODE)
+        return
+    try:
+        CEDAR_ENGINE.load(text)
+        app_logger.info("Cedar edge policies loaded (mode=%s, modules=%s)",
+                        CEDAR_MODE, ", ".join(sorted(POLICY_SYNC.cedar_policies)))
+    except Exception as e:  # noqa: BLE001 — keep serving; enforce fails closed per-request
+        app_logger.error("Cedar edge policy load failed (mode=%s): %s", CEDAR_MODE, e)
+
 # --- Startup log ---
 app_logger.info(
     f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
@@ -196,6 +238,7 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         app_logger.warning(f"JWKS prefetch failed (will retry on first request): {e}")
     POLICY_SYNC.start()
+    _load_cedar_from_bundle()
     yield
     POLICY_SYNC.stop()
 
@@ -356,7 +399,8 @@ async def health():
     """Liveness check endpoint consistent with ecosystem convention."""
     stats = STORE.stats()
     return HealthResponse(status="ok", jwks_cached=bool(JWKS_CACHE),
-                          ready=POLICY_SYNC.ready(), **stats)
+                          ready=POLICY_SYNC.ready(), cedar_mode=CEDAR_MODE,
+                          cedar_loaded=CEDAR_ENGINE.loaded, **stats)
 
 @app.get("/health/ready", tags=["Health"])
 async def health_ready():
@@ -374,9 +418,30 @@ async def reload_policies():
     """
     STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
     POLICY_SYNC.trigger_refresh()
+    _load_cedar_from_bundle()
     app_logger.info("Static policies reloaded and module auth-policy refresh triggered via /reload endpoint")
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)
+
+def _log_cedar(decision, *, legacy_denial, method, path, policy) -> None:
+    """One line per Cedar evaluation.
+
+    In shadow mode this is THE deliverable: the cedar-vs-legacy diff that must
+    be clean before enforcement flips (RFC-05 shadow-mode rule). Mismatches and
+    engine errors log at WARNING so they are grep-able in aggregate.
+    """
+    legacy = "deny" if legacy_denial else "allow"
+    cedar = decision.decision
+    match = cedar == legacy
+    line = ("cedar-%s module=%s op=%s cedar=%s legacy=%s match=%s reasons=%s%s" % (
+        CEDAR_MODE, policy.module, policy.operation_id, cedar, legacy, match,
+        ",".join(decision.reasons) or "-",
+        f" error={decision.error}" if decision.error else ""))
+    if CEDAR_MODE == "shadow" and (not match or cedar == "error"):
+        app_logger.warning("%s — %s %s", line, method, path)
+    else:
+        app_logger.debug("%s — %s %s", line, method, path)
+
 
 # --- Authentication Endpoint ---
 @app.get("/auth", response_model=AuthResponse, tags=["Auth"])
@@ -409,7 +474,20 @@ async def authenticate(request: Request):
         app_logger.error("Auth rejected [policy-conflict] — %s %s", forwarded_method, path)
         raise HTTPException(status_code=403, detail="Conflicting auth policy")
 
+    # Cedar edge tier applies to module routes only; static prefixes stay on
+    # the legacy check until those surfaces adopt OpenAPI (staticPolicies TODO).
+    cedar_applies = kind == "route" and CEDAR_MODE != "off" and POLICY_BUNDLE_DIR
+
     if policy.public:
+        if cedar_applies:
+            decision = CEDAR_ENGINE.decide(
+                module=policy.module, operation_id=policy.operation_id,
+                user_id=None, scopes=[], tenant=None, request_id=request_id)
+            _log_cedar(decision, legacy_denial=None, method=forwarded_method, path=path, policy=policy)
+            if CEDAR_MODE == "enforce" and decision.decision != "allow":
+                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
+                                   forwarded_method, path)
+                raise HTTPException(status_code=403, detail="Access denied by policy")
         app_logger.debug("Public access granted to: %s", path)
         response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
         return set_auth_headers(response, request_id)
@@ -424,22 +502,41 @@ async def authenticate(request: Request):
     token_scopes = extract_token_scopes(payload)
     tenant = _resolve_claim_path(payload, TOKEN_TENANT_CLAIM_PATH) if TOKEN_TENANT_CLAIM_PATH else None
 
-    if kind == "route" and policy.tenant_required and not tenant:
-        # Presence-only gate: tenant validity stays a module concern.
-        app_logger.warning("Auth rejected [tenant-missing] — %s %s", forwarded_method, path)
-        raise HTTPException(status_code=403, detail="Tenant claim required")
-
-    required = policy.scopes
-    if required and not set(token_scopes).intersection(required):
-        app_logger.warning(
-            "Auth rejected [scope-mismatch] — %s %s (has: %s, needs any of: %s)",
-            forwarded_method, path, token_scopes, list(required))
-        raise HTTPException(status_code=403, detail=f"Insufficient scopes. Required any of: {list(required)}")
-
     user_id = payload.get("preferred_username") or payload.get("sub")
     if not user_id:
         client = payload.get("azp") or payload.get("client_id")
         user_id = f"svc:{client}" if client else None
+
+    # Legacy coarse decision (auth-policy.json semantics), computed without
+    # raising so shadow mode can diff it against Cedar on denials too.
+    legacy_denial = None
+    if kind == "route" and policy.tenant_required and not tenant:
+        # Presence-only gate: tenant validity stays a module concern.
+        legacy_denial = ("tenant-missing", "Tenant claim required")
+    elif policy.scopes and not set(token_scopes).intersection(policy.scopes):
+        legacy_denial = ("scope-mismatch",
+                         f"Insufficient scopes. Required any of: {list(policy.scopes)}")
+
+    if cedar_applies:
+        decision = CEDAR_ENGINE.decide(
+            module=policy.module, operation_id=policy.operation_id,
+            user_id=user_id, scopes=token_scopes, tenant=tenant, request_id=request_id)
+        _log_cedar(decision, legacy_denial=legacy_denial, method=forwarded_method,
+                   path=path, policy=policy)
+        if CEDAR_MODE == "enforce":
+            # Cedar IS the decision — the legacy tenant/scope logic is retired
+            # on this path (F1). Deny and engine error both fail closed.
+            if decision.decision != "allow":
+                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
+                                   forwarded_method, path)
+                raise HTTPException(status_code=403, detail="Access denied by policy")
+            legacy_denial = None
+
+    if legacy_denial:
+        reason, detail = legacy_denial
+        app_logger.warning("Auth rejected [%s] — %s %s", reason, forwarded_method, path)
+        raise HTTPException(status_code=403, detail=detail)
+
     app_logger.info("Access granted to user %s for %s %s", user_id, forwarded_method, path)
 
     response = JSONResponse(content=AuthResponse(

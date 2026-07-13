@@ -1,4 +1,6 @@
-FROM python:3.13-alpine
+# slim (glibc), not alpine: cedarpy (Cedar edge PDP, RFC-05 P2) publishes
+# manylinux wheels only — no musl build.
+FROM python:3.13-slim
 
 # Define build arguments
 ARG USER_ID=1064
@@ -7,8 +9,8 @@ ARG USER_NAME=l64user
 ARG GROUP_NAME=l64group
 
 # Create group and user with the specified IDs
-RUN addgroup -g ${GROUP_ID} ${GROUP_NAME} && \
-    adduser -D -u ${USER_ID} -G ${GROUP_NAME} ${USER_NAME}
+RUN groupadd -g ${GROUP_ID} ${GROUP_NAME} && \
+    useradd -m -u ${USER_ID} -g ${GROUP_NAME} ${USER_NAME}
 
 # Set working directory
 WORKDIR /home/${USER_NAME}
@@ -18,8 +20,9 @@ COPY --chown=${USER_NAME}:${GROUP_NAME} requirements.txt .
 
 # Copy the FastAPI application (no longer single-file: policy_store.py holds the
 # in-memory auth-policy table, policy_sync.py the k8s discovery/fetch loop,
-# policy_bundle.py the signed-bundle policy source used in provenance mode)
-COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py .
+# policy_bundle.py the signed-bundle policy source used in provenance mode,
+# cedar_edge.py the in-process Cedar edge PDP)
+COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py cedar_edge.py .
 
 # Install any needed packages specified in requirements.txt
 RUN python -m pip install --upgrade pip && \
@@ -34,9 +37,9 @@ COPY --chown=${USER_NAME}:${GROUP_NAME} --chmod=755 entrypoint.sh .
 # Make port 8081 available outside this container
 EXPOSE 8081
 
-# Health check
+# Health check (python stdlib — slim ships neither wget nor curl)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost:8081/health || exit 1
+    CMD python -c "import urllib.request;urllib.request.urlopen('http://localhost:8081/health', timeout=4)" || exit 1
 
 # Set user context
 USER ${USER_NAME}

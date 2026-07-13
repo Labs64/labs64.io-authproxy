@@ -5,3 +5,6 @@ requests==2.33.1
 PyYAML==6.0.3
 pydantic>=2.0
 kubernetes==33.1.0
+# Cedar edge PDP (RFC-05 P2) — in-process policy evaluation. Ships manylinux
+# (glibc) wheels only, which is why the image base is python:3.13-slim.
+cedarpy==4.8.7
