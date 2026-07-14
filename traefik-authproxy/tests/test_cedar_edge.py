@@ -1,4 +1,4 @@
-"""Tests for the in-process Cedar edge PDP (RFC-05 P2)."""
+"""Tests for the in-process Cedar edge PDP."""
 import sys
 import pathlib
 

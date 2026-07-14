@@ -1,12 +1,17 @@
 """In-memory edge auth-policy table for the traefik-authproxy.
 
-Routes come from module auth-policy.json documents (generated from OpenAPI
-x-labs64-auth); static prefix policies cover non-OpenAPI surfaces (UI bundles).
-Matching semantics: exact OpenAPI path-template match ({param} -> one segment,
-optional trailing slash, case-sensitive) against the PRE-STRIP external URI;
-static prefix policies are consulted only when no route template matches;
-no match at all means the caller must fail closed.
+Live-discovery routes come from each module's generated auth-policy.cedar
+(the @path/@method/@public/@tenantRequired/@scopes annotations OpenAPI
+x-labs64-auth compiles onto every permit — see parse_cedar_document); the
+signed-bundle policy source (policy_bundle.py) still reads the sibling
+auth-policy.json document via parse_policy_document, unchanged. Static prefix
+policies cover non-OpenAPI surfaces (UI bundles). Matching semantics: exact
+OpenAPI path-template match ({param} -> one segment, optional trailing slash,
+case-sensitive) against the PRE-STRIP external URI; static prefix policies are
+consulted only when no route template matches; no match at all means the
+caller must fail closed.
 """
+import json
 import logging
 import os
 import re
@@ -89,6 +94,58 @@ def parse_policy_document(module: str, base_path: str, doc: Any) -> List[RoutePo
             public=bool(raw.get("public", False)),
             tenant_required=bool(raw.get("tenantRequired", False)),
             scopes=tuple(str(s) for s in raw.get("scopes") or []),
+            pattern=compile_template(template),
+        ))
+    return routes
+
+
+def parse_cedar_document(module: str, base_path: str, cedar_text: str) -> List[RoutePolicy]:
+    """Rebuild one module's routing table from its generated edge Cedar text.
+
+    OpenApiAuthPreprocessor.cedarPolicies (labs64.io-commons) stamps every
+    permit with @path/@method/@public/@tenantRequired/@scopes annotations, so
+    the same policy set the Cedar edge PDP evaluates for decisions also
+    carries the OpenAPI-template routing table auth-policy.json used to
+    provide. cedarpy.policies_to_json_str() is the only supported way to read
+    a policy's annotations back out (there is no per-policy annotation getter
+    on PolicySet), so route extraction goes through the same JSON conversion
+    cedarpy uses internally.
+
+    Policies without a @path/@method pair (there are none in the edge tier
+    today, but a future mixed set should not explode) are skipped rather than
+    treated as routes.
+    """
+    import cedarpy
+
+    try:
+        raw = cedarpy.policies_to_json_str(cedar_text)
+    except Exception as e:
+        raise PolicyValidationError(f"{module}: cedar policy set failed to parse: {e}") from e
+    try:
+        doc = json.loads(raw)
+    except ValueError as e:
+        raise PolicyValidationError(f"{module}: cedar-to-json conversion produced invalid JSON: {e}") from e
+
+    routes: List[RoutePolicy] = []
+    for policy in (doc.get("staticPolicies") or {}).values():
+        annotations = policy.get("annotations") or {}
+        path = annotations.get("path")
+        method = annotations.get("method")
+        if not path or not method:
+            continue
+        operation_id = annotations.get("id", "")
+        if "::" in operation_id:
+            operation_id = operation_id.split("::", 1)[1]
+        template = f"{base_path.rstrip('/')}{path}"
+        scopes_csv = annotations.get("scopes", "")
+        routes.append(RoutePolicy(
+            module=module,
+            operation_id=operation_id,
+            method=str(method).upper(),
+            path_template=template,
+            public=annotations.get("public") == "true",
+            tenant_required=annotations.get("tenantRequired") == "true",
+            scopes=tuple(s for s in scopes_csv.split(",") if s),
             pattern=compile_template(template),
         ))
     return routes

@@ -50,24 +50,27 @@ TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 STATIC_POLICY_FILE = os.getenv("STATIC_POLICY_FILE", "static_policies.yaml")
 # Periodic re-fetch interval for module auth policies (seconds).
 POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
-# Provenance mode (RFC-05 P0): when set, module policies come from a verified,
+# Provenance mode: when set, module policies come from a verified,
 # cosign-signed OCI bundle mounted here (by an init container that pulls by
 # digest + verifies), NOT from live in-cluster discovery. Setting this disables
 # the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
 POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
-# Cedar edge tier (RFC-05 P2): "off" | "shadow" | "enforce".
-#   off     — legacy auth-policy.json decision only.
+# Cedar edge tier: "off" | "shadow" | "enforce".
+#   off     — legacy public/tenant/scope decision only (still computed from the
+#             policy's tenant_required/scopes fields; on live discovery those
+#             now come from the generated Cedar's own routing annotations, not
+#             a separate JSON document — see policy_store.parse_cedar_document).
 #   shadow  — evaluate the generated edge Cedar policies on every module-route
 #             request and LOG agreement with the legacy decision; behavior
 #             unchanged. This is the mandatory pre-enforcement diff.
 #   enforce — Cedar IS the decision for module routes (legacy public/tenant/
 #             scope matching retired); static-prefix routes stay legacy until
 #             those surfaces adopt OpenAPI (see staticPolicies TODO).
-# This is the declarative auth-policy.json ↔ Cedar engine switch. The cedar
-# policies arrive over whichever policy source is active: inside the signed
-# bundle (POLICY_BUNDLE_DIR) or, under live discovery, from each module's
-# /.well-known/auth-policy.cedar — the same distribution as auth-policy.json.
-CEDAR_MODE = os.getenv("CEDAR_MODE", "shadow").strip().lower()
+# The cedar policies arrive over whichever policy source is active: inside the
+# signed bundle (POLICY_BUNDLE_DIR, still paired with a JSON routing doc) or,
+# under live discovery, from each module's /.well-known/auth-policy.cedar
+# alone — routing and the decision now travel in the same generated file.
+CEDAR_MODE = os.getenv("CEDAR_MODE", "enforce").strip().lower()
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
@@ -82,6 +85,10 @@ logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
 app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
 
+# Sensitive enforcement detail (user/tenant/scopes/resource) rides a dedicated
+# child logger so the Cedar testing phase can enable it WITHOUT turning the whole
+# app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
+cedar_detail_logger = logging.getLogger("traefik_authproxy.cedar.detail")
 
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
 # /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and
@@ -185,10 +192,10 @@ class ReloadResponse(BaseModel):
 # --- Policy Store ---
 STORE = PolicyStore()
 STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
-# Policy source: signed bundle (provenance-safe, RFC-05 P0) when POLICY_BUNDLE_DIR
-# is set, else legacy live-pod discovery. Both expose start/stop/ready/
-# trigger_refresh, so the rest of the app is source-agnostic.
-# --- Cedar edge PDP (RFC-05 P2) ---
+# Policy source: signed bundle (provenance-safe) when POLICY_BUNDLE_DIR is set,
+# else legacy live-pod discovery. Both expose start/stop/ready/trigger_refresh,
+# so the rest of the app is source-agnostic.
+# --- Cedar edge PDP ---
 CEDAR_ENGINE = CedarEdgeEngine()
 if CEDAR_MODE not in ("off", "shadow", "enforce"):
     app_logger.warning("Unknown CEDAR_MODE %r — falling back to 'shadow'", CEDAR_MODE)
@@ -198,9 +205,12 @@ if POLICY_BUNDLE_DIR:
     POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
     _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
 else:
-    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL,
-                             fetch_cedar=CEDAR_MODE != "off")
-    _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
+    # Cedar fetch is unconditional here (not gated on CEDAR_MODE): the
+    # live-discovery routing table is now derived from the same generated
+    # auth-policy.cedar the edge PDP evaluates, so it's needed for routing
+    # regardless of whether Cedar also makes the decision.
+    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
+    _POLICY_SOURCE = "live in-cluster discovery (legacy — see F2)"
 
 
 def _load_cedar_policies() -> None:
@@ -431,24 +441,51 @@ async def reload_policies():
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)
 
-def _log_cedar(decision, *, legacy_denial, method, path, policy) -> None:
-    """One line per Cedar evaluation.
+def _edge_outcome(mode: str, decision: str) -> str:
+    """Outcome verb for the edge summary: phase + effective allow/deny.
 
-    In shadow mode this is THE deliverable: the cedar-vs-legacy diff that must
-    be clean before enforcement flips (RFC-05 shadow-mode rule). Mismatches and
-    engine errors log at WARNING so they are grep-able in aggregate.
+    Any non-allow (deny or engine error) is a deny for enforcement purposes
+    (fail-closed); `decision` still reports allow/deny/error as the reason.
     """
-    legacy = "deny" if legacy_denial else "allow"
+    phase = "enforced" if mode == "enforce" else "shadow"
+    return f"{phase}-{'allow' if decision == 'allow' else 'deny'}"
+
+
+def _log_cedar(decision, *, legacy_denial, method, path, policy,
+               user_id, scopes, tenant, request_id) -> None:
+    """One summary line per Cedar edge evaluation, plus an optional detail line.
+
+    Summary (INFO for a clean allow, WARN for deny/error/mismatch) is
+    non-sensitive: mode, outcome, decision, the shadow diff (legacy/match), the
+    matched policy ids, and method+path. In enforce mode this line IS the block
+    record — it carries the reasons the legacy `Auth rejected [cedar-*]` line
+    used to drop. Sensitive fields (user/tenant/scopes/resource) go to the
+    `traefik_authproxy.cedar.detail` logger at DEBUG, off unless enabled.
+    """
     cedar = decision.decision
-    match = cedar == legacy
-    line = ("cedar-%s module=%s op=%s cedar=%s legacy=%s match=%s reasons=%s%s" % (
-        CEDAR_MODE, policy.module, policy.operation_id, cedar, legacy, match,
-        ",".join(decision.reasons) or "-",
-        f" error={decision.error}" if decision.error else ""))
-    if CEDAR_MODE == "shadow" and (not match or cedar == "error"):
-        app_logger.warning("%s — %s %s", line, method, path)
+    outcome = _edge_outcome(CEDAR_MODE, cedar)
+    # legacy is the coarse auth-policy.json result: a denial tuple means deny,
+    # its absence (public route, or an authenticated route with no denial) means
+    # allow. Always compute the diff so allow/allow parity shows match=True — the
+    # shadow-mode signal that Cedar agrees with legacy before enforcing.
+    legacy = "deny" if legacy_denial else "allow"
+    match = str(cedar == legacy)
+    summary = ("cedar-%s outcome=%s module=%s op=%s decision=%s legacy=%s match=%s reasons=%s requestId=%s — %s %s" % (
+        CEDAR_MODE, outcome, policy.module, policy.operation_id, cedar, legacy, match,
+        ",".join(decision.reasons) or "-", request_id, method, path))
+
+    actionable = cedar != "allow" or match == "False"
+    if actionable:
+        app_logger.warning(summary)
     else:
-        app_logger.debug("%s — %s %s", line, method, path)
+        app_logger.info(summary)
+
+    if cedar_detail_logger.isEnabledFor(logging.DEBUG):
+        cedar_detail_logger.debug(
+            "cedar-detail requestId=%s user=%s tenant=%s scopes=%s resource=%s::%s%s — %s %s",
+            request_id, user_id or "-", tenant or "-", ",".join(scopes) or "-",
+            policy.module, policy.operation_id,
+            f" error={decision.error}" if decision.error else "", method, path)
 
 
 # --- Authentication Endpoint ---
@@ -491,10 +528,9 @@ async def authenticate(request: Request):
             decision = CEDAR_ENGINE.decide(
                 module=policy.module, operation_id=policy.operation_id,
                 user_id=None, scopes=[], tenant=None, request_id=request_id)
-            _log_cedar(decision, legacy_denial=None, method=forwarded_method, path=path, policy=policy)
+            _log_cedar(decision, legacy_denial=None, method=forwarded_method, path=path,
+                       policy=policy, user_id=None, scopes=[], tenant=None, request_id=request_id)
             if CEDAR_MODE == "enforce" and decision.decision != "allow":
-                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
-                                   forwarded_method, path)
                 raise HTTPException(status_code=403, detail="Access denied by policy")
         app_logger.debug("Public access granted to: %s", path)
         response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
@@ -529,14 +565,12 @@ async def authenticate(request: Request):
         decision = CEDAR_ENGINE.decide(
             module=policy.module, operation_id=policy.operation_id,
             user_id=user_id, scopes=token_scopes, tenant=tenant, request_id=request_id)
-        _log_cedar(decision, legacy_denial=legacy_denial, method=forwarded_method,
-                   path=path, policy=policy)
+        _log_cedar(decision, legacy_denial=legacy_denial, method=forwarded_method, path=path,
+                   policy=policy, user_id=user_id, scopes=token_scopes, tenant=tenant,
+                   request_id=request_id)
         if CEDAR_MODE == "enforce":
-            # Cedar IS the decision — the legacy tenant/scope logic is retired
-            # on this path (F1). Deny and engine error both fail closed.
+            # Cedar IS the decision — legacy tenant/scope logic is retired here (F1).
             if decision.decision != "allow":
-                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
-                                   forwarded_method, path)
                 raise HTTPException(status_code=403, detail="Access denied by policy")
             legacy_denial = None
 
@@ -545,7 +579,8 @@ async def authenticate(request: Request):
         app_logger.warning("Auth rejected [%s] — %s %s", reason, forwarded_method, path)
         raise HTTPException(status_code=403, detail=detail)
 
-    app_logger.info("Access granted to user %s for %s %s", user_id, forwarded_method, path)
+    app_logger.info("Access granted for %s %s", forwarded_method, path)
+    app_logger.debug("Access granted to user %s for %s %s", user_id, forwarded_method, path)
 
     response = JSONResponse(content=AuthResponse(
         message="Authentication successful", user_id=user_id, scopes=token_scopes).model_dump())

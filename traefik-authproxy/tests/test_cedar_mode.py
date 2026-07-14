@@ -1,4 +1,4 @@
-"""Cedar edge-tier wiring tests: shadow parity + enforce semantics (RFC-05 P2)."""
+"""Cedar edge-tier wiring tests: shadow parity + enforce semantics."""
 import logging
 import sys
 import pathlib

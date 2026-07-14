@@ -1,9 +1,8 @@
-# Edge-policy bundle (RFC-05 P0 — Provenance)
+# Edge-policy bundle
 
 Provenance-safe distribution of the ACS edge auth policies. Instead of the
 authproxy pulling each module's `/.well-known/auth-policy` live from the very pod
-it authorizes (RFC-05 finding **F2** — self-authored runtime policy, a privilege
-escalation path), CI generates the policies from the modules' OpenAPI
+it authorizes, CI generates the policies from the modules' OpenAPI
 `x-labs64-auth` metadata, assembles a bundle, **cosign-signs** it, and pushes it
 to an OCI registry. The ACS loads that bundle **by digest**, and an init
 container **verifies the signature before the ACS starts**. The authorized pod
@@ -13,9 +12,7 @@ can no longer author the policy that governs it.
 
 ```
 OpenAPI x-labs64-auth ──(commons OpenApiAuthPreprocessor)──▶ modules/<name>.json
-        │                                                    modules/<name>.cedar   (RFC-05 P2: generated
-        │                                                        │                   Tier-1 edge Cedar,
-        │                                                        └─ cedar validate   vs the ONE commons schema)
+        │                                                    modules/<name>.cedar
         └─ manifest.json  ──(oras push)──▶ OCI registry ──(cosign sign, by digest)──▶ signed bundle
                                                                          │
    ACS init: oras pull @digest ──▶ cosign verify (fail-closed) ──▶ /bundle ──▶ policy_bundle.py

@@ -1,4 +1,4 @@
-"""Signed-bundle policy source for the traefik-authproxy (RFC-05 P0 — Provenance).
+"""Signed-bundle policy source for the traefik-authproxy.
 
 This is the provenance-safe alternative to live-pod discovery (policy_sync.py).
 Instead of fetching each module's /.well-known/auth-policy over unauthenticated
@@ -51,7 +51,7 @@ class PolicyBundleLoader:
         self._ready = False
         self.loaded_modules: List[str] = []
         self.bundle_meta: Dict[str, object] = {}
-        # RFC-05 P2: generated Tier-1 edge Cedar policy text per module (from
+        # Generated Tier-1 edge Cedar policy text per module (from
         # the manifest's optional "cedar" field). Older bundles have none.
         self.cedar_policies: Dict[str, str] = {}
 
