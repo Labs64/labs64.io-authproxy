@@ -87,7 +87,6 @@ app_logger.setLevel(numeric_level)
 # app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
 cedar_detail_logger = logging.getLogger("traefik_authproxy.cedar.detail")
 
-
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
 # /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and
 # the Swagger-UI assets are polled by tooling; neither is interesting signal.
@@ -465,9 +464,9 @@ def _log_cedar(decision, *, legacy_denial, method, path, policy,
     # shadow-mode signal that Cedar agrees with legacy before enforcing.
     legacy = "deny" if legacy_denial else "allow"
     match = str(cedar == legacy)
-    summary = ("cedar-%s outcome=%s module=%s op=%s decision=%s legacy=%s match=%s reasons=%s — %s %s" % (
+    summary = ("cedar-%s outcome=%s module=%s op=%s decision=%s legacy=%s match=%s reasons=%s requestId=%s — %s %s" % (
         CEDAR_MODE, outcome, policy.module, policy.operation_id, cedar, legacy, match,
-        ",".join(decision.reasons) or "-", method, path))
+        ",".join(decision.reasons) or "-", request_id, method, path))
 
     actionable = cedar != "allow" or match == "False"
     if actionable:

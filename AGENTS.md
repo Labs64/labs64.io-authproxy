@@ -37,7 +37,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
   ```
   cedar-<mode> outcome=<enforced|shadow>-<allow|deny> module=<m> op=<operationId> \
-    decision=<allow|deny|error> legacy=<allow|deny> match=<bool> reasons=<policyIds|-> — <METHOD> <path>
+    decision=<allow|deny|error> legacy=<allow|deny> match=<bool> reasons=<policyIds|-> requestId=<id> — <METHOD> <path>
   ```
 
   Level: INFO for a clean allow, WARN for deny/error/mismatch. In enforce mode this line **is** the block record — it carries the matched policy `reasons`.
