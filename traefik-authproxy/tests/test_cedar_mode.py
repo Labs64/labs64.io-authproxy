@@ -109,7 +109,13 @@ def test_shadow_parity_matrix(cedar_app, monkeypatch, caplog, path, payload, exp
     assert response.status_code == expected
     shadow_lines = [r.message for r in caplog.records if "cedar-shadow" in r.message]
     assert len(shadow_lines) == 1
-    assert "match=True" in shadow_lines[0]
+    # An explicit legacy denial (403 in this fixture) is diffed against cedar's
+    # decision (match=True — both deny here). Legacy-allow and public routes
+    # carry no legacy denial to diff against, so match is "-", not True.
+    if expected == 403:
+        assert "match=True" in shadow_lines[0]
+    else:
+        assert "match=-" in shadow_lines[0]
 
 
 def test_shadow_mismatch_logged_as_warning_but_legacy_wins(cedar_app, monkeypatch, caplog):

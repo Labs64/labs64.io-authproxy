@@ -82,6 +82,11 @@ logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
 app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
 
+# Sensitive enforcement detail (user/tenant/scopes/resource) rides a dedicated
+# child logger so the Cedar testing phase can enable it WITHOUT turning the whole
+# app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
+cedar_detail_logger = logging.getLogger("traefik_authproxy.cedar.detail")
+
 
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
 # /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and
@@ -431,24 +436,51 @@ async def reload_policies():
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)
 
-def _log_cedar(decision, *, legacy_denial, method, path, policy) -> None:
-    """One line per Cedar evaluation.
+def _edge_outcome(mode: str, decision: str) -> str:
+    """Outcome verb for the edge summary: phase + effective allow/deny.
 
-    In shadow mode this is THE deliverable: the cedar-vs-legacy diff that must
-    be clean before enforcement flips (RFC-05 shadow-mode rule). Mismatches and
-    engine errors log at WARNING so they are grep-able in aggregate.
+    Any non-allow (deny or engine error) is a deny for enforcement purposes
+    (fail-closed); `decision` still reports allow/deny/error as the reason.
     """
-    legacy = "deny" if legacy_denial else "allow"
+    phase = "enforced" if mode == "enforce" else "shadow"
+    return f"{phase}-{'allow' if decision == 'allow' else 'deny'}"
+
+
+def _log_cedar(decision, *, legacy_denial, method, path, policy,
+               user_id, scopes, tenant, request_id) -> None:
+    """One summary line per Cedar edge evaluation, plus an optional detail line.
+
+    Summary (INFO for a clean allow, WARN for deny/error/mismatch) is
+    non-sensitive: mode, outcome, decision, the shadow diff (legacy/match), the
+    matched policy ids, and method+path. In enforce mode this line IS the block
+    record — it carries the reasons the legacy `Auth rejected [cedar-*]` line
+    used to drop. Sensitive fields (user/tenant/scopes/resource) go to the
+    `traefik_authproxy.cedar.detail` logger at DEBUG, off unless enabled.
+    """
     cedar = decision.decision
-    match = cedar == legacy
-    line = ("cedar-%s module=%s op=%s cedar=%s legacy=%s match=%s reasons=%s%s" % (
-        CEDAR_MODE, policy.module, policy.operation_id, cedar, legacy, match,
-        ",".join(decision.reasons) or "-",
-        f" error={decision.error}" if decision.error else ""))
-    if CEDAR_MODE == "shadow" and (not match or cedar == "error"):
-        app_logger.warning("%s — %s %s", line, method, path)
+    outcome = _edge_outcome(CEDAR_MODE, cedar)
+    if legacy_denial is None:
+        legacy = "-"
+        match = "-"
     else:
-        app_logger.debug("%s — %s %s", line, method, path)
+        legacy = "deny" if legacy_denial else "allow"
+        match = str(cedar == legacy)
+    summary = ("cedar-%s outcome=%s module=%s op=%s decision=%s legacy=%s match=%s reasons=%s — %s %s" % (
+        CEDAR_MODE, outcome, policy.module, policy.operation_id, cedar, legacy, match,
+        ",".join(decision.reasons) or "-", method, path))
+
+    actionable = cedar != "allow" or match == "False"
+    if actionable:
+        app_logger.warning(summary)
+    else:
+        app_logger.info(summary)
+
+    if cedar_detail_logger.isEnabledFor(logging.DEBUG):
+        cedar_detail_logger.debug(
+            "cedar-detail requestId=%s user=%s tenant=%s scopes=%s resource=%s::%s%s — %s %s",
+            request_id, user_id or "-", tenant or "-", ",".join(scopes) or "-",
+            policy.module, policy.operation_id,
+            f" error={decision.error}" if decision.error else "", method, path)
 
 
 # --- Authentication Endpoint ---
@@ -491,10 +523,9 @@ async def authenticate(request: Request):
             decision = CEDAR_ENGINE.decide(
                 module=policy.module, operation_id=policy.operation_id,
                 user_id=None, scopes=[], tenant=None, request_id=request_id)
-            _log_cedar(decision, legacy_denial=None, method=forwarded_method, path=path, policy=policy)
+            _log_cedar(decision, legacy_denial=None, method=forwarded_method, path=path,
+                       policy=policy, user_id=None, scopes=[], tenant=None, request_id=request_id)
             if CEDAR_MODE == "enforce" and decision.decision != "allow":
-                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
-                                   forwarded_method, path)
                 raise HTTPException(status_code=403, detail="Access denied by policy")
         app_logger.debug("Public access granted to: %s", path)
         response = JSONResponse(content=AuthResponse(message="Public access granted").model_dump())
@@ -529,14 +560,12 @@ async def authenticate(request: Request):
         decision = CEDAR_ENGINE.decide(
             module=policy.module, operation_id=policy.operation_id,
             user_id=user_id, scopes=token_scopes, tenant=tenant, request_id=request_id)
-        _log_cedar(decision, legacy_denial=legacy_denial, method=forwarded_method,
-                   path=path, policy=policy)
+        _log_cedar(decision, legacy_denial=legacy_denial, method=forwarded_method, path=path,
+                   policy=policy, user_id=user_id, scopes=token_scopes, tenant=tenant,
+                   request_id=request_id)
         if CEDAR_MODE == "enforce":
-            # Cedar IS the decision — the legacy tenant/scope logic is retired
-            # on this path (F1). Deny and engine error both fail closed.
+            # Cedar IS the decision — legacy tenant/scope logic is retired here (F1).
             if decision.decision != "allow":
-                app_logger.warning("Auth rejected [cedar-%s] — %s %s", decision.decision,
-                                   forwarded_method, path)
                 raise HTTPException(status_code=403, detail="Access denied by policy")
             legacy_denial = None
 
