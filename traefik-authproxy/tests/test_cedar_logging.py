@@ -1,4 +1,4 @@
-"""Edge enforcement-logging scheme: summary vs. DEBUG detail (RFC-05 testing phase)."""
+"""Edge enforcement-logging scheme: summary vs. DEBUG detail."""
 import logging
 import sys
 import pathlib

@@ -50,24 +50,27 @@ TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 STATIC_POLICY_FILE = os.getenv("STATIC_POLICY_FILE", "static_policies.yaml")
 # Periodic re-fetch interval for module auth policies (seconds).
 POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
-# Provenance mode (RFC-05 P0): when set, module policies come from a verified,
+# Provenance mode: when set, module policies come from a verified,
 # cosign-signed OCI bundle mounted here (by an init container that pulls by
 # digest + verifies), NOT from live in-cluster discovery. Setting this disables
 # the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
 POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
-# Cedar edge tier (RFC-05 P2): "off" | "shadow" | "enforce".
-#   off     — legacy auth-policy.json decision only.
+# Cedar edge tier: "off" | "shadow" | "enforce".
+#   off     — legacy public/tenant/scope decision only (still computed from the
+#             policy's tenant_required/scopes fields; on live discovery those
+#             now come from the generated Cedar's own routing annotations, not
+#             a separate JSON document — see policy_store.parse_cedar_document).
 #   shadow  — evaluate the generated edge Cedar policies on every module-route
 #             request and LOG agreement with the legacy decision; behavior
 #             unchanged. This is the mandatory pre-enforcement diff.
 #   enforce — Cedar IS the decision for module routes (legacy public/tenant/
 #             scope matching retired); static-prefix routes stay legacy until
 #             those surfaces adopt OpenAPI (see staticPolicies TODO).
-# This is the declarative auth-policy.json ↔ Cedar engine switch. The cedar
-# policies arrive over whichever policy source is active: inside the signed
-# bundle (POLICY_BUNDLE_DIR) or, under live discovery, from each module's
-# /.well-known/auth-policy.cedar — the same distribution as auth-policy.json.
-CEDAR_MODE = os.getenv("CEDAR_MODE", "shadow").strip().lower()
+# The cedar policies arrive over whichever policy source is active: inside the
+# signed bundle (POLICY_BUNDLE_DIR, still paired with a JSON routing doc) or,
+# under live discovery, from each module's /.well-known/auth-policy.cedar
+# alone — routing and the decision now travel in the same generated file.
+CEDAR_MODE = os.getenv("CEDAR_MODE", "enforce").strip().lower()
 
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
@@ -189,10 +192,10 @@ class ReloadResponse(BaseModel):
 # --- Policy Store ---
 STORE = PolicyStore()
 STORE.set_static(load_static_policies(STATIC_POLICY_FILE))
-# Policy source: signed bundle (provenance-safe, RFC-05 P0) when POLICY_BUNDLE_DIR
-# is set, else legacy live-pod discovery. Both expose start/stop/ready/
-# trigger_refresh, so the rest of the app is source-agnostic.
-# --- Cedar edge PDP (RFC-05 P2) ---
+# Policy source: signed bundle (provenance-safe) when POLICY_BUNDLE_DIR is set,
+# else legacy live-pod discovery. Both expose start/stop/ready/trigger_refresh,
+# so the rest of the app is source-agnostic.
+# --- Cedar edge PDP ---
 CEDAR_ENGINE = CedarEdgeEngine()
 if CEDAR_MODE not in ("off", "shadow", "enforce"):
     app_logger.warning("Unknown CEDAR_MODE %r — falling back to 'shadow'", CEDAR_MODE)
@@ -202,9 +205,12 @@ if POLICY_BUNDLE_DIR:
     POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
     _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
 else:
-    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL,
-                             fetch_cedar=CEDAR_MODE != "off")
-    _POLICY_SOURCE = "live in-cluster discovery (legacy — see RFC-05 F2)"
+    # Cedar fetch is unconditional here (not gated on CEDAR_MODE): the
+    # live-discovery routing table is now derived from the same generated
+    # auth-policy.cedar the edge PDP evaluates, so it's needed for routing
+    # regardless of whether Cedar also makes the decision.
+    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
+    _POLICY_SOURCE = "live in-cluster discovery (legacy — see F2)"
 
 
 def _load_cedar_policies() -> None:

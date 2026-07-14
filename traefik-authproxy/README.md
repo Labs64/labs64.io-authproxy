@@ -48,8 +48,8 @@ The middleware is configured using environment variables.
 | `OIDC_AUDIENCE`     | Audience claim to verify in the JWT.                               | `account`                                     |
 | `STATIC_POLICY_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_policies.yaml`                        |
 | `JWKS_CACHE_TTL`    | JWKS cache TTL in seconds. Controls how quickly key rotation is picked up. | `3600` (1 hour)                        |
-| `POLICY_BUNDLE_DIR` | Signed policy bundle directory (RFC-05 P0). When set, live discovery is disabled. | (unset)                                |
-| `CEDAR_MODE`        | Cedar edge tier (RFC-05 P2): `off` (legacy auth-policy.json decides) / `shadow` (log cedar-vs-legacy diff) / `enforce` (Cedar decides module routes). Works under both policy sources. | `shadow`         |
+| `POLICY_BUNDLE_DIR` | Signed policy bundle directory. When set, live discovery is disabled. | (unset)                                |
+| `CEDAR_MODE`        | Cedar edge tier: `off` (legacy public/tenant/scope decision) / `shadow` (log cedar-vs-legacy diff) / `enforce` (Cedar decides module routes). Routing itself always comes from `auth-policy.cedar` on live discovery, regardless of mode. Works under both policy sources. | `shadow`         |
 | `LOG_LEVEL`         | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).               | `INFO`                                        |
 
 ## Usage

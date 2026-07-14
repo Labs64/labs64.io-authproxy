@@ -1,4 +1,4 @@
-"""In-process Cedar edge PDP (RFC-05 P2 — Tier 1).
+"""In-process Cedar edge PDP.
 
 Evaluates the GENERATED per-operation edge policies (shipped inside the signed
 P0 bundle as ``modules/<name>.cedar``) with the ``cedarpy`` bindings — zero

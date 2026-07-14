@@ -1,4 +1,4 @@
-"""Tests for the signed-bundle policy source (RFC-05 P0)."""
+"""Tests for the signed-bundle policy source."""
 import json
 
 import pytest
@@ -18,7 +18,7 @@ def _write_bundle(root, modules, cedar=None):
     """modules: {name: (base_path, doc)} → writes manifest + module docs.
 
     cedar: optional {name: cedar_text} — writes modules/<name>.cedar and adds
-    the manifest "cedar" field (RFC-05 P2 bundles).
+    the manifest "cedar" field.
     """
     (root / "modules").mkdir()
     entries = []

@@ -7,6 +7,7 @@ from policy_store import (
     StaticPolicy,
     compile_template,
     load_static_policies,
+    parse_cedar_document,
     parse_policy_document,
 )
 
@@ -19,6 +20,34 @@ AUDIT_ROUTE = {
     "operationId": "publishEvent", "method": "POST", "path": "/audit/publish",
     "public": False, "tenantRequired": True, "scopes": ["audit-event:write"],
 }
+
+# Mirrors OpenApiAuthPreprocessor.cedarPolicies()'s output shape (commons
+# auth-context-java) for a tenant+scope route and a public route.
+AUDIT_CEDAR = """
+@id("auditflow::publishEvent")
+@path("/audit/publish")
+@method("POST")
+@public("false")
+@tenantRequired("true")
+@scopes("audit-event:write")
+permit(
+  principal,
+  action == Labs64IO::Action::"invoke",
+  resource == Labs64IO::ApiOperation::"auditflow::publishEvent"
+) when { (context has tenant) && (context.scopes.contains("audit-event:write")) };
+
+@id("auditflow::health")
+@path("/health")
+@method("GET")
+@public("true")
+@tenantRequired("false")
+@scopes("")
+permit(
+  principal,
+  action == Labs64IO::Action::"invoke",
+  resource == Labs64IO::ApiOperation::"auditflow::health"
+);
+"""
 
 
 class TestCompileTemplate:
@@ -58,6 +87,58 @@ class TestParsePolicyDocument:
     def test_rejects_malformed_route(self):
         with pytest.raises(PolicyValidationError):
             parse_policy_document("m", "/m", _doc([{"method": "GET"}]))  # no path
+
+
+class TestParseCedarDocument:
+    def test_prefixes_base_path_and_maps_annotations(self):
+        routes = parse_cedar_document("auditflow", "/auditflow/api/v1", AUDIT_CEDAR)
+        by_op = {r.operation_id: r for r in routes}
+        publish = by_op["publishEvent"]
+        assert publish.path_template == "/auditflow/api/v1/audit/publish"
+        assert publish.method == "POST"
+        assert publish.tenant_required is True
+        assert publish.scopes == ("audit-event:write",)
+        assert publish.public is False
+
+    def test_public_route_has_no_scopes_and_no_tenant_requirement(self):
+        routes = parse_cedar_document("auditflow", "/auditflow/api/v1", AUDIT_CEDAR)
+        health = next(r for r in routes if r.operation_id == "health")
+        assert health.public is True
+        assert health.tenant_required is False
+        assert health.scopes == ()
+
+    def test_operation_id_strips_module_prefix(self):
+        routes = parse_cedar_document("auditflow", "/auditflow/api/v1", AUDIT_CEDAR)
+        assert all(r.module == "auditflow" for r in routes)
+        assert {r.operation_id for r in routes} == {"publishEvent", "health"}
+
+    def test_matches_the_same_way_as_parse_policy_document(self):
+        # parse_cedar_document must be a drop-in replacement for the JSON
+        # parser on the live-discovery path: same base path, same route ->
+        # equivalent RoutePolicy (module/method/path_template/flags/scopes).
+        json_routes = parse_policy_document("auditflow", "/auditflow/api/v1", _doc([AUDIT_ROUTE]))
+        cedar_routes = parse_cedar_document("auditflow", "/auditflow/api/v1", AUDIT_CEDAR)
+        json_publish = json_routes[0]
+        cedar_publish = next(r for r in cedar_routes if r.operation_id == "publishEvent")
+        assert json_publish.module == cedar_publish.module
+        assert json_publish.method == cedar_publish.method
+        assert json_publish.path_template == cedar_publish.path_template
+        assert json_publish.public == cedar_publish.public
+        assert json_publish.tenant_required == cedar_publish.tenant_required
+        assert json_publish.scopes == cedar_publish.scopes
+
+    def test_rejects_unparseable_cedar_text(self):
+        with pytest.raises(PolicyValidationError):
+            parse_cedar_document("m", "/m", "not cedar at all {{{")
+
+    def test_policy_without_path_annotation_is_skipped_not_a_route(self):
+        # Domain-tier-shaped policies (no @path/@method) must never surface as
+        # routes if a mixed set is ever fetched from this endpoint.
+        cedar = """
+        @id("m::domainOnly")
+        permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"m::domainOnly");
+        """
+        assert parse_cedar_document("m", "/m", cedar) == []
 
 
 class TestPolicyStore:
