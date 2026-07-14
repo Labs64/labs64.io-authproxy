@@ -459,12 +459,12 @@ def _log_cedar(decision, *, legacy_denial, method, path, policy,
     """
     cedar = decision.decision
     outcome = _edge_outcome(CEDAR_MODE, cedar)
-    if legacy_denial is None:
-        legacy = "-"
-        match = "-"
-    else:
-        legacy = "deny" if legacy_denial else "allow"
-        match = str(cedar == legacy)
+    # legacy is the coarse auth-policy.json result: a denial tuple means deny,
+    # its absence (public route, or an authenticated route with no denial) means
+    # allow. Always compute the diff so allow/allow parity shows match=True — the
+    # shadow-mode signal that Cedar agrees with legacy before enforcing.
+    legacy = "deny" if legacy_denial else "allow"
+    match = str(cedar == legacy)
     summary = ("cedar-%s outcome=%s module=%s op=%s decision=%s legacy=%s match=%s reasons=%s — %s %s" % (
         CEDAR_MODE, outcome, policy.module, policy.operation_id, cedar, legacy, match,
         ",".join(decision.reasons) or "-", method, path))
