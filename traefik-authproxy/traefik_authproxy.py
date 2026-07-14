@@ -573,7 +573,8 @@ async def authenticate(request: Request):
         app_logger.warning("Auth rejected [%s] — %s %s", reason, forwarded_method, path)
         raise HTTPException(status_code=403, detail=detail)
 
-    app_logger.info("Access granted to user %s for %s %s", user_id, forwarded_method, path)
+    app_logger.info("Access granted for %s %s", forwarded_method, path)
+    app_logger.debug("Access granted to user %s for %s %s", user_id, forwarded_method, path)
 
     response = JSONResponse(content=AuthResponse(
         message="Authentication successful", user_id=user_id, scopes=token_scopes).model_dump())

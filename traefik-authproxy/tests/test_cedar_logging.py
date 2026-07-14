@@ -127,6 +127,17 @@ def test_shadow_deny_mismatch_is_warn(cedar_app, monkeypatch, caplog):
     assert summary and "outcome=shadow-deny" in summary[0].message and summary[0].levelno == logging.WARNING
 
 
+def test_access_grant_keeps_user_out_of_info(cedar_app, monkeypatch, caplog):
+    _mode(monkeypatch, "off")  # exercise the plain authenticated grant path, no cedar
+    _token(monkeypatch, {"sub": "secret-user", "scope": "thing:read"})
+    with caplog.at_level(logging.INFO, logger="traefik_authproxy"):
+        assert _get(cedar_app, "/m/api/v1/scoped").status_code == 200
+    info_msgs = [r.message for r in caplog.records
+                 if r.name == "traefik_authproxy" and r.levelno == logging.INFO]
+    assert any("Access granted for" in m for m in info_msgs)
+    assert not any("secret-user" in m for m in info_msgs)
+
+
 def test_summary_carries_request_id_for_cross_tier_join(cedar_app, monkeypatch, caplog):
     _mode(monkeypatch, "enforce")
     _token(monkeypatch, {"sub": "u1", "scope": "thing:read"})
