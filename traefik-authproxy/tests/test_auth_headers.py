@@ -38,12 +38,16 @@ def test_uuid7_is_valid_uuid_version_7():
 
 @pytest.fixture
 def client(monkeypatch):
-    store = PolicyStore()
+    store = traefik_authproxy.STORE
     store.set_static([
-        StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",)),
-        StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=()),
-    ])
-    monkeypatch.setattr(traefik_authproxy, "STORE", store)
+        StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",), cedar_id="checkout-api"),
+        StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=(), cedar_id="checkout-docs"),
+    ], "mock-cedar")
+    class MockDecision:
+        decision = "allow"
+        reasons = []
+        error = ""
+    monkeypatch.setattr(traefik_authproxy.CEDAR_ENGINE, "decide", lambda *a, **k: MockDecision())
     return TestClient(app)
 
 

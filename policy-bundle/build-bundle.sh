@@ -4,13 +4,13 @@
 # Pipeline (this is what CI runs; it is the ONLY sanctioned way policy reaches
 # the ACS — the running module pods never serve policy to the authorizer):
 #
-#   1. GENERATE  one auth-policy.json + one <name>.cedar (RFC-05 P2: generated
+#   1. GENERATE  one <name>.cedar (RFC-05 P2: generated
 #                Tier-1 edge Cedar) per module from its OpenAPI x-labs64-auth,
 #                via the commons OpenApiAuthPreprocessor (the single source of
 #                truth for the coarse edge layer). Cedar files are validated
 #                against the shared commons schema when the `cedar` CLI is
 #                installed (CI installs it; locally it is a hard gate too).
-#   2. ASSEMBLE  modules/<name>.{json,cedar} + manifest.json into a bundle dir.
+#   2. ASSEMBLE  modules/<name>.cedar + manifest.json into a bundle dir.
 #   3. PUSH      the bundle dir as an OCI artifact (oras) to the registry.
 #   4. SIGN      the pushed artifact by digest (cosign).
 #   5. EMIT      the digest — the deployment pins the ACS to THIS digest.
@@ -51,8 +51,8 @@ BUNDLE_DIR="$BUILD_DIR/bundle"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUNDLE_DIR/modules"
 
 # --- 0. commons preprocessor classpath (built jar + deps) -------------------
-generate_policy() {  # <module> <openapi-in> <policy-out> <cedar-out>
-  local module="$1" spec="$2" out="$3" cedar_out="$4"
+generate_policy() {  # <module> <openapi-in> <cedar-out>
+  local module="$1" spec="$2" cedar_out="$3"
   local jar cp
   jar="$(ls "$COMMONS_DIR"/target/auth-context-*-*.jar 2>/dev/null | head -1 || true)"
   [[ -n "$jar" ]] || { echo "ERROR: commons jar not built ($COMMONS_DIR/target). Run 'mvn -pl auth-context-java package'." >&2; exit 1; }
@@ -61,7 +61,7 @@ generate_policy() {  # <module> <openapi-in> <policy-out> <cedar-out>
   fi
   cp="$jar:$(cat "$BUILD_DIR/cp.txt")"
   java -cp "$cp" io.labs64.authcontext.openapi.OpenApiAuthPreprocessorCli \
-    --input "$spec" --openapi-output "$BUILD_DIR/$(basename "$spec")" --policy-output "$out" \
+    --input "$spec" --openapi-output "$BUILD_DIR/$(basename "$spec")" \
     --cedar-output "$cedar_out" --module "$module"
 }
 
@@ -95,9 +95,9 @@ while IFS=$'\t' read -r name base_path spec; do
   [[ -n "$name" ]] || continue
   echo "== generating $name from $spec"
   [[ -f "$spec" ]] || { echo "ERROR: OpenAPI spec not found: $spec" >&2; exit 1; }
-  generate_policy "$name" "$spec" "$BUNDLE_DIR/modules/$name.json" "$BUNDLE_DIR/modules/$name.cedar"
+  generate_policy "$name" "$spec" "$BUNDLE_DIR/modules/$name.cedar"
   validate_cedar "$BUNDLE_DIR/modules/$name.cedar"
-  MANIFEST_MODULES="$MANIFEST_MODULES{\"name\":\"$name\",\"basePath\":\"$base_path\",\"file\":\"modules/$name.json\",\"cedar\":\"modules/$name.cedar\"},"
+  MANIFEST_MODULES="$MANIFEST_MODULES{\"name\":\"$name\",\"basePath\":\"$base_path\",\"cedar\":\"modules/$name.cedar\"},"
 done < "$BUILD_DIR/plan.txt"
 
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

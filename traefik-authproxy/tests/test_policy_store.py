@@ -8,12 +8,10 @@ from policy_store import (
     compile_template,
     load_static_policies,
     parse_cedar_document,
-    parse_policy_document,
 )
 
 
-def _doc(routes, version=1):
-    return {"version": version, "routes": routes}
+
 
 
 AUDIT_ROUTE = {
@@ -73,21 +71,6 @@ class TestCompileTemplate:
         assert not compile_template("/m/Thing").match("/m/thing")
 
 
-class TestParsePolicyDocument:
-    def test_prefixes_base_path_and_maps_fields(self):
-        routes = parse_policy_document("auditflow", "/auditflow/api/v1", _doc([AUDIT_ROUTE]))
-        r = routes[0]
-        assert r.path_template == "/auditflow/api/v1/audit/publish"
-        assert r.method == "POST" and r.tenant_required and r.scopes == ("audit-event:write",)
-
-    def test_rejects_unknown_version(self):
-        with pytest.raises(PolicyValidationError):
-            parse_policy_document("m", "/m", _doc([AUDIT_ROUTE], version=2))
-
-    def test_rejects_malformed_route(self):
-        with pytest.raises(PolicyValidationError):
-            parse_policy_document("m", "/m", _doc([{"method": "GET"}]))  # no path
-
 
 class TestParseCedarDocument:
     def test_prefixes_base_path_and_maps_annotations(self):
@@ -112,21 +95,6 @@ class TestParseCedarDocument:
         assert all(r.module == "auditflow" for r in routes)
         assert {r.operation_id for r in routes} == {"publishEvent", "health"}
 
-    def test_matches_the_same_way_as_parse_policy_document(self):
-        # parse_cedar_document must be a drop-in replacement for the JSON
-        # parser on the live-discovery path: same base path, same route ->
-        # equivalent RoutePolicy (module/method/path_template/flags/scopes).
-        json_routes = parse_policy_document("auditflow", "/auditflow/api/v1", _doc([AUDIT_ROUTE]))
-        cedar_routes = parse_cedar_document("auditflow", "/auditflow/api/v1", AUDIT_CEDAR)
-        json_publish = json_routes[0]
-        cedar_publish = next(r for r in cedar_routes if r.operation_id == "publishEvent")
-        assert json_publish.module == cedar_publish.module
-        assert json_publish.method == cedar_publish.method
-        assert json_publish.path_template == cedar_publish.path_template
-        assert json_publish.public == cedar_publish.public
-        assert json_publish.tenant_required == cedar_publish.tenant_required
-        assert json_publish.scopes == cedar_publish.scopes
-
     def test_rejects_unparseable_cedar_text(self):
         with pytest.raises(PolicyValidationError):
             parse_cedar_document("m", "/m", "not cedar at all {{{")
@@ -144,8 +112,8 @@ class TestParseCedarDocument:
 class TestPolicyStore:
     def _store_with_audit(self):
         store = PolicyStore()
-        store.set_module("auditflow", parse_policy_document(
-            "auditflow", "/auditflow/api/v1", _doc([AUDIT_ROUTE])))
+        store.set_module("auditflow", parse_cedar_document(
+            "auditflow", "/auditflow/api/v1", AUDIT_CEDAR))
         return store
 
     def test_match_route(self):
@@ -168,16 +136,16 @@ class TestPolicyStore:
 
     def test_cross_module_collision_is_conflict(self):
         store = self._store_with_audit()
-        store.set_module("other", parse_policy_document(
-            "other", "/auditflow/api/v1", _doc([AUDIT_ROUTE])))
+        store.set_module("other", parse_cedar_document(
+            "other", "/auditflow/api/v1", AUDIT_CEDAR))
         assert store.match("POST", "/auditflow/api/v1/audit/publish")[0] == "conflict"
 
     def test_static_longest_prefix_only_when_no_route_match(self):
         store = self._store_with_audit()
         store.set_static([
-            StaticPolicy(prefix="/checkout-ui", public=False, scopes=("admin-role",)),
-            StaticPolicy(prefix="/checkout-ui/assets", public=True, scopes=()),
-        ])
+            StaticPolicy(prefix="/checkout-ui", public=False, scopes=("admin-role",), cedar_id="checkout-ui"),
+            StaticPolicy(prefix="/checkout-ui/assets", public=True, scopes=(), cedar_id="checkout-ui-assets"),
+        ], "mock-cedar-text")
         kind, policy = store.match("GET", "/checkout-ui/index.html")
         assert kind == "static" and policy.scopes == ("admin-role",)
         kind, policy = store.match("GET", "/checkout-ui/assets/app.js")
@@ -188,19 +156,37 @@ class TestPolicyStore:
 
 
 class TestLoadStaticPolicies(object):
-    def test_load_from_yaml(self, tmp_path):
-        f = tmp_path / "static_policies.yaml"
+    def test_load_from_cedar(self, tmp_path):
+        f = tmp_path / "static_policies.cedar"
         f.write_text(
-            "policies:\n"
-            "  - path: /checkout-ui\n"
-            "    scopes: [admin-role, ecommerce-role]\n"
-            "  - path: /public-thing\n"
-            "    public: true\n"
+            '@id("static::checkout-ui")\n'
+            '@pathPrefix("/checkout-ui")\n'
+            '@public("false")\n'
+            '@tenantRequired("false")\n'
+            '@scopes("admin-role,ecommerce-role")\n'
+            'permit(\n'
+            '  principal,\n'
+            '  action == Labs64IO::Action::"invoke",\n'
+            '  resource == Labs64IO::ApiOperation::"static::checkout-ui"\n'
+            ') when { context.scopes.contains("admin-role") || context.scopes.contains("ecommerce-role") };\n'
+            '\n'
+            '@id("static::public-thing")\n'
+            '@pathPrefix("/public-thing")\n'
+            '@public("true")\n'
+            '@tenantRequired("false")\n'
+            '@scopes("")\n'
+            'permit(\n'
+            '  principal,\n'
+            '  action == Labs64IO::Action::"invoke",\n'
+            '  resource == Labs64IO::ApiOperation::"static::public-thing"\n'
+            ');\n'
         )
-        policies = load_static_policies(str(f))
+        policies, cedar_text = load_static_policies(str(f))
+        assert "permit" in cedar_text
         assert policies[0] == StaticPolicy(prefix="/checkout-ui", public=False,
-                                           scopes=("admin-role", "ecommerce-role"))
+                                           scopes=("admin-role", "ecommerce-role"), cedar_id="checkout-ui")
         assert policies[1].public
+        assert policies[1].cedar_id == "public-thing"
 
     def test_missing_file_is_empty(self):
-        assert load_static_policies("/nonexistent.yaml") == []
+        assert load_static_policies("/nonexistent.cedar") == ([], "")

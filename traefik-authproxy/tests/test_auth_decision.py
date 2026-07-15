@@ -8,29 +8,57 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import traefik_authproxy
 from traefik_authproxy import app
-from policy_store import PolicyStore, StaticPolicy, parse_policy_document
+from policy_store import PolicyStore, StaticPolicy, parse_cedar_document
 
-MODULE_DOC = {
-    "version": 1,
-    "routes": [
-        {"operationId": "publicOp", "method": "GET", "path": "/public",
-         "public": True, "tenantRequired": False, "scopes": []},
-        {"operationId": "protectedOp", "method": "GET", "path": "/protected",
-         "public": False, "tenantRequired": False, "scopes": []},
-        {"operationId": "tenantOp", "method": "GET", "path": "/tenant-scoped",
-         "public": False, "tenantRequired": True, "scopes": []},
-        {"operationId": "scopedOp", "method": "GET", "path": "/scoped",
-         "public": False, "tenantRequired": False, "scopes": ["thing:read"]},
-    ],
-}
+MODULE_CEDAR = """
+@id("test::publicOp")
+@path("/public")
+@method("GET")
+@public("true")
+@tenantRequired("false")
+@scopes("")
+permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"test::publicOp");
 
+@id("test::protectedOp")
+@path("/protected")
+@method("GET")
+@public("false")
+@tenantRequired("false")
+@scopes("")
+permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"test::protectedOp");
+
+@id("test::tenantOp")
+@path("/tenant-scoped")
+@method("GET")
+@public("false")
+@tenantRequired("true")
+@scopes("")
+permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"test::tenantOp") when { (context has tenant) };
+
+@id("test::adminOp")
+@path("/admin")
+@method("POST")
+@public("false")
+@tenantRequired("false")
+@scopes("admin:write")
+permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"test::adminOp") when { (context.scopes.contains("admin:write")) };
+"""
+
+
+@pytest.fixture(autouse=True)
+def setup_cedar(monkeypatch):
+    monkeypatch.setattr(traefik_authproxy.POLICY_SYNC, "combined_cedar", lambda: MODULE_CEDAR)
+    traefik_authproxy.STORE.set_module("test", parse_cedar_document("test", "", MODULE_CEDAR))
+    traefik_authproxy._load_cedar_policies()
 
 @pytest.fixture
 def store(monkeypatch):
-    s = PolicyStore()
-    s.set_module("m", parse_policy_document("m", "/m/api/v1", MODULE_DOC))
-    s.set_static([StaticPolicy(prefix="/checkout-ui", public=False, scopes=("admin-role",))])
-    monkeypatch.setattr(traefik_authproxy, "STORE", s)
+    s = traefik_authproxy.STORE
+    s.set_static(
+        [StaticPolicy(prefix="/checkout-ui", public=False, scopes=("admin-role",), cedar_id="checkout-ui")],
+        'permit(principal, action == Labs64IO::Action::"invoke", resource == Labs64IO::ApiOperation::"static::checkout-ui") when { context.scopes.contains("admin-role") };'
+    )
+    traefik_authproxy._load_cedar_policies()
     return s
 
 
@@ -51,7 +79,7 @@ def test_no_policy_is_403(client):
 
 
 def test_public_route_bypasses_without_token_and_emits_full_headers(client):
-    response = client.get("/auth", headers={"X-Forwarded-Uri": "/m/api/v1/public"})
+    response = client.get("/auth", headers={"X-Forwarded-Uri": "/public"})
     assert response.status_code == 200
     assert response.headers["X-Auth-User"] == ""
     assert response.headers["X-Auth-Scopes"] == ""
@@ -60,7 +88,7 @@ def test_public_route_bypasses_without_token_and_emits_full_headers(client):
 
 
 def test_protected_route_without_token_is_401(client):
-    response = client.get("/auth", headers={"X-Forwarded-Uri": "/m/api/v1/protected"})
+    response = client.get("/auth", headers={"X-Forwarded-Uri": "/protected"})
     assert response.status_code == 401
 
 
@@ -68,7 +96,7 @@ def test_tenant_required_without_tenant_claim_is_403(client, monkeypatch):
     _token(monkeypatch, {"sub": "u1"})
     response = client.get(
         "/auth",
-        headers={"X-Forwarded-Uri": "/m/api/v1/tenant-scoped", "Authorization": "Bearer x"},
+        headers={"X-Forwarded-Uri": "/tenant-scoped", "Authorization": "Bearer x"},
     )
     assert response.status_code == 403
 
@@ -77,19 +105,19 @@ def test_scope_mismatch_is_403(client, monkeypatch):
     _token(monkeypatch, {"sub": "u1", "scope": "other:scope"})
     response = client.get(
         "/auth",
-        headers={"X-Forwarded-Uri": "/m/api/v1/scoped", "Authorization": "Bearer x"},
+        headers={"X-Forwarded-Uri": "/admin", "X-Forwarded-Method": "POST", "Authorization": "Bearer x"},
     )
     assert response.status_code == 403
 
 
 def test_scope_match_is_200_with_scopes_header(client, monkeypatch):
-    _token(monkeypatch, {"sub": "u1", "scope": "thing:read"})
+    _token(monkeypatch, {"sub": "u1", "scope": "admin:write"})
     response = client.get(
         "/auth",
-        headers={"X-Forwarded-Uri": "/m/api/v1/scoped", "Authorization": "Bearer x"},
+        headers={"X-Forwarded-Uri": "/admin", "X-Forwarded-Method": "POST", "Authorization": "Bearer x"},
     )
     assert response.status_code == 200
-    assert response.headers["X-Auth-Scopes"] == "thing:read"
+    assert response.headers["X-Auth-Scopes"] == "admin:write"
 
 
 def test_no_scope_token_allowed_when_policy_requires_none(client, monkeypatch):
@@ -98,7 +126,7 @@ def test_no_scope_token_allowed_when_policy_requires_none(client, monkeypatch):
     _token(monkeypatch, {"sub": "u1"})
     response = client.get(
         "/auth",
-        headers={"X-Forwarded-Uri": "/m/api/v1/protected", "Authorization": "Bearer x"},
+        headers={"X-Forwarded-Uri": "/protected", "Authorization": "Bearer x"},
     )
     assert response.status_code == 200
     assert response.headers["X-Auth-Scopes"] == ""

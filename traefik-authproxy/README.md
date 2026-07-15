@@ -46,7 +46,7 @@ The middleware is configured using environment variables.
 | `OIDC_REALM`        | OIDC realm name (if applicable).                                   | `default`                                     |
 | `OIDC_DISCOVERY_URL`| Full URL to the OIDC discovery endpoint.                           | `{OIDC_URL}/realms/{OIDC_REALM}/.well-known/openid-configuration` |
 | `OIDC_AUDIENCE`     | Audience claim to verify in the JWT.                               | `account`                                     |
-| `STATIC_POLICY_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_policies.yaml`                        |
+| `STATIC_POLICY_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_policies.cedar`                        |
 | `JWKS_CACHE_TTL`    | JWKS cache TTL in seconds. Controls how quickly key rotation is picked up. | `3600` (1 hour)                        |
 | `POLICY_BUNDLE_DIR` | Signed policy bundle directory. When set, live discovery is disabled. | (unset)                                |
 | `CEDAR_MODE`        | Cedar edge tier: `off` (legacy public/tenant/scope decision) / `shadow` (log cedar-vs-legacy diff) / `enforce` (Cedar decides module routes). Routing itself always comes from `auth-policy.cedar` on live discovery, regardless of mode. Works under both policy sources. | `shadow`         |

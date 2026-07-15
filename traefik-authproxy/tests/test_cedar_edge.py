@@ -104,3 +104,52 @@ def test_engine_error_is_fail_closed(engine, monkeypatch):
     monkeypatch.setattr(cedarpy, "is_authorized", boom)
     decision = _decide(engine)
     assert decision == EdgeDecision("error", [], "engine exploded")
+
+
+# Static prefix policies are concatenated into the SAME policy set as the
+# module policies (see traefik_authproxy._load_cedar_policies). A static permit
+# MUST be resource-scoped and scope-gated: an unconstrained/unconditional
+# `permit(principal, action, resource);` would match every request and turn the
+# whole gateway into allow-all. These tests are the regression guard for that.
+STATIC_POLICY = '''
+@id("static::policy0")
+@pathPrefix("/checkout")
+@public("false")
+@scopes("checkout-role")
+permit(
+  principal,
+  action == Labs64IO::Action::"invoke",
+  resource == Labs64IO::ApiOperation::"static::policy0"
+) when { context.scopes.contains("checkout-role") };
+'''
+
+
+@pytest.fixture
+def combined_engine():
+    e = CedarEdgeEngine()
+    e.load(EDGE_POLICIES + "\n" + STATIC_POLICY)
+    return e
+
+
+def test_static_policy_does_not_leak_to_module_operations(combined_engine):
+    # A protected module op with insufficient scopes must still be denied even
+    # though a static policy is present in the same set (no allow-all leak).
+    assert combined_engine.decide(
+        module="m", operation_id="tenantScopedOp", user_id="alice",
+        scopes=["checkout-role"], tenant="t_100", request_id="r").decision == "deny"
+
+
+def test_static_policy_does_not_allow_unknown_operation(combined_engine):
+    # An operation with no matching policy stays fail-closed with statics loaded.
+    assert combined_engine.decide(
+        module="m", operation_id="unknownOp", user_id=None,
+        scopes=[], tenant=None, request_id="r").decision == "deny"
+
+
+def test_static_policy_enforces_its_own_scope(combined_engine):
+    denied = combined_engine.decide(module="static", operation_id="policy0",
+                                    user_id="bob", scopes=[], tenant=None, request_id="r")
+    allowed = combined_engine.decide(module="static", operation_id="policy0",
+                                     user_id="bob", scopes=["checkout-role"], tenant=None,
+                                     request_id="r")
+    assert denied.decision == "deny" and allowed.decision == "allow"

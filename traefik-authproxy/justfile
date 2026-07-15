@@ -17,8 +17,8 @@ run: docker
     docker run -p 8081:8081 \
       -e OIDC_DISCOVERY_URL="{{LOCAL_OIDC_DOCKER}}/realms/labs64io/.well-known/openid-configuration" \
       -e OIDC_AUDIENCE="account" \
-      -e STATIC_POLICY_FILE="/home/l64user/static_policies.yaml" \
-      -v $(pwd)/sample_static_policies.yaml:/home/l64user/static_policies.yaml \
+      -e STATIC_POLICY_FILE="/home/l64user/static_policies.cedar" \
+      -v $(pwd)/sample_static_policies.cedar:/home/l64user/static_policies.cedar \
       {{APP_NAME}}:latest
 
 # open documentation

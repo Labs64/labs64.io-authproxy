@@ -23,7 +23,7 @@ import logging
 import os
 from typing import Dict, List
 
-from policy_store import PolicyStore, PolicyValidationError, parse_policy_document
+from policy_store import PolicyStore, PolicyValidationError, parse_cedar_document
 
 logger = logging.getLogger("traefik_authproxy.policy_bundle")
 
@@ -117,28 +117,24 @@ class PolicyBundleLoader:
                 raise BundleError(f"malformed module entry: {entry!r}")
             name = entry.get("name")
             base_path = entry.get("basePath")
-            rel_file = entry.get("file")
-            if not name or not base_path or not rel_file:
-                raise BundleError(f"module entry missing name/basePath/file: {entry!r}")
-            doc_path = os.path.join(self.bundle_dir, rel_file)
-            try:
-                with open(doc_path) as f:
-                    doc = json.load(f)
-            except (OSError, ValueError) as e:
-                raise BundleError(f"{name}: unreadable policy doc {rel_file!r}: {e}") from e
-            try:
-                # PolicyValidationError subclasses ValueError — catch it first.
-                routes = parse_policy_document(name, base_path, doc)
-            except PolicyValidationError as e:
-                raise BundleError(f"{name}: invalid policy: {e}") from e
+            if not name or not base_path:
+                raise BundleError(f"module entry missing name/basePath: {entry!r}")
             rel_cedar = entry.get("cedar")
-            if rel_cedar:
-                cedar_path = os.path.join(self.bundle_dir, rel_cedar)
-                try:
-                    with open(cedar_path) as f:
-                        cedar_policies[name] = f.read()
-                except OSError as e:
-                    raise BundleError(f"{name}: unreadable cedar policy {rel_cedar!r}: {e}") from e
+            if not rel_cedar:
+                raise BundleError(f"module entry missing 'cedar': {entry!r}")
+            cedar_path = os.path.join(self.bundle_dir, rel_cedar)
+            try:
+                with open(cedar_path) as f:
+                    cedar_text = f.read()
+                    cedar_policies[name] = cedar_text
+            except OSError as e:
+                raise BundleError(f"{name}: unreadable cedar policy {rel_cedar!r}: {e}") from e
+
+            try:
+                routes = parse_cedar_document(name, base_path, cedar_text)
+            except PolicyValidationError as e:
+                raise BundleError(f"{name}: invalid cedar policy: {e}") from e
+
             self.store.set_module(name, routes)
             loaded.append(name)
             if result is not None:

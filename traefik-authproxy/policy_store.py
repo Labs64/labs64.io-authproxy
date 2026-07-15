@@ -2,14 +2,7 @@
 
 Live-discovery routes come from each module's generated auth-policy.cedar
 (the @path/@method/@public/@tenantRequired/@scopes annotations OpenAPI
-x-labs64-auth compiles onto every permit — see parse_cedar_document); the
-signed-bundle policy source (policy_bundle.py) still reads the sibling
-auth-policy.json document via parse_policy_document, unchanged. Static prefix
-policies cover non-OpenAPI surfaces (UI bundles). Matching semantics: exact
-OpenAPI path-template match ({param} -> one segment, optional trailing slash,
-case-sensitive) against the PRE-STRIP external URI; static prefix policies are
-consulted only when no route template matches; no match at all means the
-caller must fail closed.
+x-labs64-auth compiles onto every permit — see parse_cedar_document).
 """
 import json
 import logging
@@ -23,7 +16,7 @@ import yaml
 
 logger = logging.getLogger("traefik_authproxy.policy_store")
 
-SUPPORTED_POLICY_VERSION = 1
+
 
 _TEMPLATE_PARAM_RE = re.compile(r"\{[^/{}]+\}")
 
@@ -65,38 +58,10 @@ class StaticPolicy:
     prefix: str
     public: bool
     scopes: Tuple[str, ...]
+    cedar_id: str
 
 
-def parse_policy_document(module: str, base_path: str, doc: Any) -> List[RoutePolicy]:
-    """Validate one module's auth-policy.json and expand it to RoutePolicies."""
-    if not isinstance(doc, dict):
-        raise PolicyValidationError(f"{module}: policy document must be an object")
-    version = doc.get("version")
-    if version != SUPPORTED_POLICY_VERSION:
-        raise PolicyValidationError(
-            f"{module}: unsupported auth-policy version {version!r} "
-            f"(supported: {SUPPORTED_POLICY_VERSION})"
-        )
-    raw_routes = doc.get("routes")
-    if not isinstance(raw_routes, list):
-        raise PolicyValidationError(f"{module}: 'routes' must be a list")
 
-    routes: List[RoutePolicy] = []
-    for raw in raw_routes:
-        if not isinstance(raw, dict) or not raw.get("path") or not raw.get("method"):
-            raise PolicyValidationError(f"{module}: malformed route entry: {raw!r}")
-        template = f"{base_path.rstrip('/')}{raw['path']}"
-        routes.append(RoutePolicy(
-            module=module,
-            operation_id=str(raw.get("operationId", "")),
-            method=str(raw["method"]).upper(),
-            path_template=template,
-            public=bool(raw.get("public", False)),
-            tenant_required=bool(raw.get("tenantRequired", False)),
-            scopes=tuple(str(s) for s in raw.get("scopes") or []),
-            pattern=compile_template(template),
-        ))
-    return routes
 
 
 def parse_cedar_document(module: str, base_path: str, cedar_text: str) -> List[RoutePolicy]:
@@ -104,12 +69,11 @@ def parse_cedar_document(module: str, base_path: str, cedar_text: str) -> List[R
 
     OpenApiAuthPreprocessor.cedarPolicies (labs64.io-commons) stamps every
     permit with @path/@method/@public/@tenantRequired/@scopes annotations, so
-    the same policy set the Cedar edge PDP evaluates for decisions also
-    carries the OpenAPI-template routing table auth-policy.json used to
-    provide. cedarpy.policies_to_json_str() is the only supported way to read
-    a policy's annotations back out (there is no per-policy annotation getter
-    on PolicySet), so route extraction goes through the same JSON conversion
-    cedarpy uses internally.
+    so the same policy set the Cedar edge PDP evaluates for decisions also
+    carries the OpenAPI-template routing table. cedarpy.policies_to_json_str()
+    is the only supported way to read a policy's annotations back out (there is
+    no per-policy annotation getter on PolicySet), so route extraction goes
+    through the same JSON conversion cedarpy uses internally.
 
     Policies without a @path/@method pair (there are none in the edge tier
     today, but a future mixed set should not explode) are skipped rather than
@@ -151,23 +115,44 @@ def parse_cedar_document(module: str, base_path: str, cedar_text: str) -> List[R
     return routes
 
 
-def load_static_policies(file_path: str) -> List[StaticPolicy]:
-    """Load static prefix policies (UI bundles etc.) from a YAML file."""
+def load_static_policies(file_path: str) -> Tuple[List[StaticPolicy], str]:
+    """Load static prefix policies (UI bundles etc.) from a Cedar file."""
     if not file_path or not os.path.isfile(file_path):
-        return []
+        return [], ""
     with open(file_path, "r") as f:
-        raw = yaml.safe_load(f) or {}
+        cedar_text = f.read()
+    
+    import cedarpy
+    try:
+        raw = cedarpy.policies_to_json_str(cedar_text)
+    except Exception as e:
+        logger.error("Failed to parse static cedar policies: %s", e)
+        return [], ""
+    
+    try:
+        doc = json.loads(raw)
+    except ValueError as e:
+        logger.error("cedar-to-json conversion produced invalid JSON: %s", e)
+        return [], ""
+
     policies: List[StaticPolicy] = []
-    for entry in raw.get("policies") or []:
-        if not isinstance(entry, dict) or not entry.get("path"):
-            logger.warning("Skipping malformed static policy entry: %r", entry)
+    for p_id, policy in (doc.get("staticPolicies") or {}).items():
+        annotations = policy.get("annotations") or {}
+        prefix = annotations.get("pathPrefix")
+        if not prefix:
             continue
+        public = annotations.get("public") == "true"
+        scopes_csv = annotations.get("scopes", "")
+        scopes = tuple(s for s in scopes_csv.split(",") if s)
+        actual_id = annotations.get("id", p_id)
+        cedar_id = actual_id.split("::", 1)[1] if "::" in actual_id else actual_id
         policies.append(StaticPolicy(
-            prefix=str(entry["path"]),
-            public=bool(entry.get("public", False)),
-            scopes=tuple(str(s) for s in entry.get("scopes") or []),
+            prefix=prefix,
+            public=public,
+            scopes=scopes,
+            cedar_id=cedar_id
         ))
-    return policies
+    return policies, cedar_text
 
 
 _CONFLICT = object()  # sentinel marking a cross-module (method, template) collision
@@ -183,6 +168,7 @@ class PolicyStore:
         self._compiled: List[Tuple[str, re.Pattern, Any]] = []
         self._conflict_count = 0
         self._static: List[StaticPolicy] = []
+        self.static_cedar_text: str = ""
 
     def set_module(self, module: str, routes: List[RoutePolicy]) -> None:
         with self._lock:
@@ -194,10 +180,11 @@ class PolicyStore:
             if self._module_routes.pop(module, None) is not None:
                 self._rebuild()
 
-    def set_static(self, policies: List[StaticPolicy]) -> None:
+    def set_static(self, policies: List[StaticPolicy], cedar_text: str) -> None:
         with self._lock:
             # Longest prefix first so the first hit is the most specific one.
             self._static = sorted(policies, key=lambda p: len(p.prefix), reverse=True)
+            self.static_cedar_text = cedar_text
 
     def modules(self) -> List[str]:
         with self._lock:
