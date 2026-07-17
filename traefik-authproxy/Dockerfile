@@ -22,7 +22,7 @@ COPY --chown=${USER_NAME}:${GROUP_NAME} requirements.txt .
 # in-memory auth-policy table, policy_sync.py the k8s discovery/fetch loop,
 # policy_bundle.py the signed-bundle policy source used in provenance mode,
 # cedar_edge.py the in-process Cedar edge PDP)
-COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py cedar_edge.py .
+COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py cedar_edge.py ./
 
 # Install any needed packages specified in requirements.txt
 RUN python -m pip install --upgrade pip && \
@@ -32,7 +32,8 @@ RUN python -m pip install --upgrade pip && \
 # entrypoint.sh only when OTEL_EXPORTER_OTLP_ENDPOINT is set). Same image, both modes.
 COPY --chown=${USER_NAME}:${GROUP_NAME} requirements-otel.txt .
 RUN pip install --no-cache-dir -r requirements-otel.txt
-COPY --chown=${USER_NAME}:${GROUP_NAME} --chmod=755 entrypoint.sh .
+COPY --chown=${USER_NAME}:${GROUP_NAME} entrypoint.sh .
+RUN chmod 755 entrypoint.sh
 
 # Make port 8081 available outside this container
 EXPOSE 8081
