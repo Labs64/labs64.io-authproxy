@@ -1,20 +1,28 @@
 # --- Python ---
 __pycache__/
-*.py[cod]
+*.py[codz]
 *$py.class
-*.pyo
 .venv/
 venv/
-env/
+.pytest_cache/
 *.egg-info/
-eggs/
-dist/
+.coverage
+htmlcov/
+
+# --- Cedar Policy Bundle ---
 build/
+dist/
+
+# --- Environment ---
+.env
 
 # --- IDE / OS ---
 .idea/
 .vscode/
+*.iml
 .DS_Store
+*.swp
+*~
 
 # --- Logs ---
 *.log
