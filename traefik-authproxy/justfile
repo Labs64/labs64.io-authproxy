@@ -17,8 +17,10 @@ run: docker
     docker run -p 8081:8081 \
       -e OIDC_DISCOVERY_URL="{{LOCAL_OIDC_DOCKER}}/realms/labs64io/.well-known/openid-configuration" \
       -e OIDC_AUDIENCE="account" \
-      -e STATIC_POLICY_FILE="/home/l64user/static_policies.cedar" \
-      -v $(pwd)/sample_static_policies.cedar:/home/l64user/static_policies.cedar \
+      -e CERBOS_URL="http://host.docker.internal:3592" \
+      -e ROUTES_DIR="/home/l64user/routes" \
+      -e STATIC_ROUTES_FILE="/home/l64user/static_routes.yaml" \
+      -v $(pwd)/static_routes.yaml:/home/l64user/static_routes.yaml \
       {{APP_NAME}}:latest
 
 # open documentation

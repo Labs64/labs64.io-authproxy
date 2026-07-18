@@ -17,10 +17,9 @@ from pydantic import BaseModel
 from jose import jwt
 from jose.exceptions import JWTError, ExpiredSignatureError
 
-from policy_store import PolicyStore, load_static_policies
-from policy_sync import PolicySync
-from policy_bundle import PolicyBundleLoader
-from cedar_edge import CedarEdgeEngine
+from policy_store import PolicyStore
+from routes_loader import load_routes_dir, load_static_routes
+from authz_edge import CerbosEdgeEngine
 
 # --- Caches ---
 DISCOVERY_CACHE: Dict[str, Any] = {}
@@ -46,15 +45,14 @@ TOKEN_SCOPES_CLAIM_PATHS = os.getenv(
 )
 # Dot-path into the JWT payload for the tenant identifier.
 TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
+# Central Cerbos PDP HTTP endpoint (RFC-07). The edge authorization decision is
+# delegated here — no in-process policy engine.
+CERBOS_URL = os.getenv("CERBOS_URL", "http://localhost:3592")
+# Directory of generated routes manifests (ConfigMap-mounted). One *.yaml per
+# module (version/module/basePath/routes) — the routing table source.
+ROUTES_DIR = os.getenv("ROUTES_DIR", "routes")
 # Static prefix policies for surfaces without an OpenAPI spec (UI bundles).
-STATIC_POLICY_FILE = os.getenv("STATIC_POLICY_FILE", "static_policies.cedar")
-# Periodic re-fetch interval for module auth policies (seconds).
-POLICY_REFRESH_INTERVAL = int(os.getenv("POLICY_REFRESH_INTERVAL", "30"))
-# Provenance mode: when set, module policies come from a verified,
-# cosign-signed OCI bundle mounted here (by an init container that pulls by
-# digest + verifies), NOT from live in-cluster discovery. Setting this disables
-# the live-pod policy pull entirely — closing F2 (self-authored runtime policy).
-POLICY_BUNDLE_DIR = os.getenv("POLICY_BUNDLE_DIR", "").strip()
+STATIC_ROUTES_FILE = os.getenv("STATIC_ROUTES_FILE", "static_routes.yaml")
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
 JWKS_CACHE_TTL = int(os.getenv("JWKS_CACHE_TTL", "3600"))
@@ -71,7 +69,7 @@ app_logger.setLevel(numeric_level)
 # Sensitive enforcement detail (user/tenant/scopes/resource) rides a dedicated
 # child logger so the Cedar testing phase can enable it WITHOUT turning the whole
 # app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
-cedar_detail_logger = logging.getLogger("traefik_authproxy.cedar.detail")
+authz_detail_logger = logging.getLogger("traefik_authproxy.authz.detail")
 
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
 # /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and
@@ -162,7 +160,7 @@ class HealthResponse(BaseModel):
     routes: int
     conflicts: int
     static_policies: int
-    cedar_loaded: bool
+    pdp_url: str
 
 class ReloadResponse(BaseModel):
     message: str
@@ -171,77 +169,54 @@ class ReloadResponse(BaseModel):
     conflicts: int
     static_policies: int
 
-# --- Policy Store ---
+# --- Policy Store + Cerbos edge PDP client ---
 STORE = PolicyStore()
-STORE.set_static(*load_static_policies(STATIC_POLICY_FILE))
-# Policy source: signed bundle (provenance-safe) when POLICY_BUNDLE_DIR is set,
-# else legacy live-pod discovery. Both expose start/stop/ready/trigger_refresh,
-# so the rest of the app is source-agnostic.
-# --- Cedar edge PDP ---
-CEDAR_ENGINE = CedarEdgeEngine()
-if POLICY_BUNDLE_DIR:
-    POLICY_SYNC = PolicyBundleLoader(STORE, POLICY_BUNDLE_DIR)
-    _POLICY_SOURCE = f"signed bundle ({POLICY_BUNDLE_DIR})"
-else:
-    # Cedar fetch is unconditional here (not gated on CEDAR_MODE): the
-    # live-discovery routing table is now derived from the same generated
-    # auth-policy.cedar the edge PDP evaluates, so it's needed for routing
-    # regardless of whether Cedar also makes the decision.
-    POLICY_SYNC = PolicySync(STORE, refresh_interval=POLICY_REFRESH_INTERVAL)
-    _POLICY_SOURCE = "live in-cluster discovery (legacy — see F2)"
+AUTHZ_ENGINE = CerbosEdgeEngine(CERBOS_URL)
 
 
-def _load_cedar_policies() -> None:
-    """(Re)load the combined generated edge Cedar set from the active policy
-    source (signed bundle or live discovery — both expose combined_cedar()).
+def _load_routes() -> None:
+    """(Re)load the module routes manifests + static routes from disk.
 
-    Fail closed: a load failure leaves the engine unloaded, which enforce mode
-    turns into deny (and shadow logs as an error mismatch)."""
-    text = POLICY_SYNC.combined_cedar()
-    text = (text + "\n" + STORE.static_cedar_text).strip()
-    if not text:
-        app_logger.warning("Policy source carries no cedar policies")
-        return
-    try:
-        CEDAR_ENGINE.load(text)
-        app_logger.info("Cedar edge policies loaded (modules=%s)",
-                        ", ".join(sorted(POLICY_SYNC.cedar_policies)))
-    except Exception as e:  # noqa: BLE001 — keep serving; enforce fails closed per-request
-        app_logger.error("Cedar edge policy load failed: %s", e)
+    Fail closed: a missing/broken manifest simply yields no routes for that
+    module, so requests to it get 403 (no policy match)."""
+    modules = load_routes_dir(ROUTES_DIR)
+    # Replace the full set: drop modules no longer present, (re)set the rest.
+    for stale in set(STORE.modules()) - set(modules):
+        STORE.drop_module(stale)
+    for module, routes in modules.items():
+        STORE.set_module(module, routes)
+    STORE.set_static(load_static_routes(STATIC_ROUTES_FILE))
+    app_logger.info("Routes loaded (modules=%s)", ", ".join(sorted(modules)) or "-")
 
 
-# Live discovery refreshes in a background thread — reload the engine whenever
-# a refresh pass changed the cedar set (bundle mode reloads via /reload only).
-if isinstance(POLICY_SYNC, PolicySync):
-    POLICY_SYNC.on_cedar_update = _load_cedar_policies
+_load_routes()
 
 # --- Startup log ---
 app_logger.info(
     f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
-    f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, static policy file: {STATIC_POLICY_FILE}, "
-    f"policy source: {_POLICY_SOURCE}, JWKS cache TTL: {JWKS_CACHE_TTL}s"
+    f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, routes dir: {ROUTES_DIR}, "
+    f"static routes file: {STATIC_ROUTES_FILE}, Cerbos PDP: {CERBOS_URL}, "
+    f"JWKS cache TTL: {JWKS_CACHE_TTL}s"
 )
 
-# --- Lifespan (prefetch JWKS + start auth-policy discovery on startup) ---
+# --- Lifespan (prefetch JWKS on startup) ---
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Prefetch JWKS keys and start auth-policy discovery on startup."""
+    """Prefetch JWKS keys and (re)load routes on startup."""
     try:
         get_jwks()
         app_logger.info("JWKS prefetched successfully during startup")
     except Exception as e:
         app_logger.warning(f"JWKS prefetch failed (will retry on first request): {e}")
-    POLICY_SYNC.start()
-    _load_cedar_policies()
+    _load_routes()
     yield
-    POLICY_SYNC.stop()
 
 # --- App Initialization ---
 app = FastAPI(
     title="Traefik Auth (M2M) Middleware",
     description="ForwardAuth service to verify OIDC JWTs and enforce OpenAPI-derived "
-                "auth policies (public/tenant/scopes) discovered from module "
-                "/.well-known/auth-policy endpoints",
+                "auth policies via the central Cerbos PDP, routing from generated "
+                "routes manifests",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -388,52 +363,60 @@ async def correlation_id_middleware(request: Request, call_next):
     return response
 
 # --- Health Check Endpoints ---
+def _ready() -> bool:
+    """Ready once at least one module's routes have loaded from the ConfigMap."""
+    return STORE.stats()["modules"] >= 1
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health():
     """Liveness check endpoint consistent with ecosystem convention."""
     stats = STORE.stats()
     return HealthResponse(status="ok", jwks_cached=bool(JWKS_CACHE),
-                          ready=POLICY_SYNC.ready(),
-                          cedar_loaded=CEDAR_ENGINE.loaded, **stats)
+                          ready=_ready(), pdp_url=AUTHZ_ENGINE.pdp_url, **stats)
 
 @app.get("/health/ready", tags=["Health"])
 async def health_ready():
-    """Readiness check: 503 until the first auth-policy sync pass has completed."""
-    if not POLICY_SYNC.ready():
-        raise HTTPException(status_code=503, detail="auth-policy sync not completed")
+    """Readiness check: 503 until at least one module's routes have loaded."""
+    if not _ready():
+        raise HTTPException(status_code=503, detail="routes not loaded")
     return {"status": "ready"}
 
 # --- Reload Endpoint ---
 @app.post("/reload", response_model=ReloadResponse, tags=["Admin"])
 async def reload_policies():
-    """Reload static prefix policies from disk and trigger a module policy re-sync.
+    """Reload the routes manifests + static routes from disk.
 
-    Useful when the STATIC_POLICY_FILE ConfigMap is updated in Kubernetes.
+    Useful when the routes/static ConfigMaps are updated in Kubernetes.
     """
-    STORE.set_static(*load_static_policies(STATIC_POLICY_FILE))
-    POLICY_SYNC.trigger_refresh()
-    _load_cedar_policies()
-    app_logger.info("Static policies reloaded and module auth-policy refresh triggered via /reload endpoint")
+    _load_routes()
+    app_logger.info("Routes and static policies reloaded via /reload endpoint")
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)
 
-def _log_cedar(decision, *, method, path, module, operation_id,
-               user_id, scopes, tenant, request_id) -> None:
-    cedar = decision.decision
-    summary = ("cedar outcome=enforced-%s module=%s op=%s decision=%s reasons=%s requestId=%s — %s %s" % (
-        'allow' if cedar == 'allow' else 'deny', module, operation_id, cedar,
-        ",".join(decision.reasons) or "-", request_id, method, path))
 
-    if cedar != "allow":
+def _edge_resource_kind(module: str) -> str:
+    """Edge Cerbos resource kind for a module: payment-gateway -> payment_gateway_api."""
+    return module.replace("-", "_") + "_api"
+
+
+def _log_authz(decision, *, method, path, resource_kind, action,
+               user_id, scopes, tenant, request_id) -> None:
+    outcome = decision.decision
+    summary = ("authz outcome=enforced-%s engine=cerbos kind=%s action=%s decision=%s requestId=%s — %s %s" % (
+        'allow' if outcome == 'allow' else 'deny', resource_kind, action, outcome,
+        request_id, method, path))
+
+    if outcome != "allow":
         app_logger.warning(summary)
     else:
         app_logger.info(summary)
 
-    if cedar_detail_logger.isEnabledFor(logging.DEBUG):
-        cedar_detail_logger.debug(
-            "cedar-detail requestId=%s user=%s tenant=%s scopes=%s resource=%s::%s%s — %s %s",
+    if authz_detail_logger.isEnabledFor(logging.DEBUG):
+        authz_detail_logger.debug(
+            "authz-detail requestId=%s user=%s tenant=%s scopes=%s resource=%s/%s%s — %s %s",
             request_id, user_id or "-", tenant or "-", ",".join(scopes) or "-",
-            module, operation_id,
+            resource_kind, action,
             f" error={decision.error}" if decision.error else "", method, path)
 
 
@@ -444,9 +427,9 @@ async def authenticate(request: Request):
     """Authenticate and authorize a request forwarded by Traefik.
 
     Matches the forwarded method/path against the policy store (module routes
-    discovered from /.well-known/auth-policy, falling back to static prefix
-    policies), then verifies the JWT and checks scopes/tenant per the matched
-    policy. Every 2xx response carries the full trusted header set (empty / "-"
+    from the generated routes manifests, falling back to static prefix
+    policies), then verifies the JWT and delegates the decision to the central
+    Cerbos PDP. Every 2xx response carries the full trusted header set (empty / "-"
     when not applicable) so Traefik's authResponseHeaders always overwrite
     client-supplied values:
     - X-Auth-User: preferred_username | sub claim from the JWT
@@ -468,16 +451,24 @@ async def authenticate(request: Request):
         app_logger.error("Auth rejected [policy-conflict] — %s %s", forwarded_method, path)
         raise HTTPException(status_code=403, detail="Conflicting auth policy")
 
-    module_name = policy.module if kind == "route" else "static"
-    op_name = policy.operation_id if kind == "route" else policy.cedar_id
+    # Map the matched policy to a Cerbos (resource_kind, action, resource_id):
+    #  - module route  -> kind <module>_api, action operationId, id <module>::<op>
+    #  - static prefix  -> kind static_api,  action static_id,   id static::<id>
+    if kind == "route":
+        resource_kind = _edge_resource_kind(policy.module)
+        action = policy.operation_id
+        resource_id = f"{policy.module}::{policy.operation_id}"
+    else:
+        resource_kind = "static_api"
+        action = policy.static_id
+        resource_id = f"static::{policy.static_id}"
 
     if policy.public:
-        decision = CEDAR_ENGINE.decide(
-            module=module_name, 
-            operation_id=op_name,
+        decision = AUTHZ_ENGINE.decide(
+            resource_kind=resource_kind, action=action, resource_id=resource_id,
             user_id=None, scopes=[], tenant=None, request_id=request_id)
-        _log_cedar(decision, method=forwarded_method, path=path,
-                   module=module_name, operation_id=op_name, 
+        _log_authz(decision, method=forwarded_method, path=path,
+                   resource_kind=resource_kind, action=action,
                    user_id=None, scopes=[], tenant=None, request_id=request_id)
         if decision.decision != "allow":
             raise HTTPException(status_code=403, detail="Access denied by policy")
@@ -500,12 +491,11 @@ async def authenticate(request: Request):
         client = payload.get("azp") or payload.get("client_id")
         user_id = f"svc:{client}" if client else None
 
-    decision = CEDAR_ENGINE.decide(
-        module=module_name, 
-        operation_id=op_name,
+    decision = AUTHZ_ENGINE.decide(
+        resource_kind=resource_kind, action=action, resource_id=resource_id,
         user_id=user_id, scopes=token_scopes, tenant=tenant, request_id=request_id)
-    _log_cedar(decision, method=forwarded_method, path=path,
-               module=module_name, operation_id=op_name, 
+    _log_authz(decision, method=forwarded_method, path=path,
+               resource_kind=resource_kind, action=action,
                user_id=user_id, scopes=token_scopes, tenant=tenant,
                request_id=request_id)
     if decision.decision != "allow":
