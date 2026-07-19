@@ -46,17 +46,17 @@ The middleware is configured using environment variables.
 | `OIDC_REALM`        | OIDC realm name (if applicable).                                   | `default`                                     |
 | `OIDC_DISCOVERY_URL`| Full URL to the OIDC discovery endpoint.                           | `{OIDC_URL}/realms/{OIDC_REALM}/.well-known/openid-configuration` |
 | `OIDC_AUDIENCE`     | Audience claim to verify in the JWT.                               | `account`                                     |
-| `STATIC_POLICY_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_policies.cedar`                        |
+| `STATIC_POLICY_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_policies.cerbos`                        |
 | `JWKS_CACHE_TTL`    | JWKS cache TTL in seconds. Controls how quickly key rotation is picked up. | `3600` (1 hour)                        |
 | `POLICY_BUNDLE_DIR` | Signed policy bundle directory. When set, live discovery is disabled. | (unset)                                |
-| `CEDAR_MODE`        | Cedar edge tier: `off` (legacy public/tenant/scope decision) / `shadow` (log cedar-vs-legacy diff) / `enforce` (Cedar decides module routes). Routing itself always comes from `auth-policy.cedar` on live discovery, regardless of mode. Works under both policy sources. | `shadow`         |
+| `CEDAR_MODE`        | Cerbos edge tier: `off` (legacy public/tenant/scope decision) / `shadow` (log cerbos-vs-legacy diff) / `enforce` (Cerbos decides module routes). Routing itself always comes from `auth-policy.cerbos` on live discovery, regardless of mode. Works under both policy sources. | `shadow`         |
 | `LOG_LEVEL`         | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).               | `INFO`                                        |
 
 ## Usage
 
 - Once deployed, Traefik will intercept any request to *whoami.example.com* and forward it to the auth-middleware for authentication.
 - For a request to be successful, it must include a valid JWT in the Authorization header with the format `Bearer <token>`. The scopes contained in the JWT must match the scopes required for the requested operation, as resolved from the applicable auth policy.
-- Auth policies come from two sources. Module routes are discovered dynamically: any Kubernetes Service labeled `labs64.io/auth-policy=true` is watched, and its `/.well-known/auth-policy` document (generated from the module's OpenAPI spec) is fetched and matched per-operation; the module's generated edge Cedar policy set is fetched the same way from `/.well-known/auth-policy.cedar` and evaluated per `CEDAR_MODE`. Static prefix policies (`STATIC_POLICY_FILE`) cover non-OpenAPI surfaces (e.g. UI bundles) and are only consulted when no module route template matches. A request with no matching policy at all fails closed with `403`.
+- Auth policies come from two sources. Module routes are discovered dynamically: any Kubernetes Service labeled `labs64.io/auth-policy=true` is watched, and its `/.well-known/auth-policy` document (generated from the module's OpenAPI spec) is fetched and matched per-operation; the module's generated edge Cerbos policy set is fetched the same way from `/.well-known/auth-policy.cerbos` and evaluated per `CEDAR_MODE`. Static prefix policies (`STATIC_POLICY_FILE`) cover non-OpenAPI surfaces (e.g. UI bundles) and are only consulted when no module route template matches. A request with no matching policy at all fails closed with `403`.
 
 ### For example:
 
