@@ -1,8 +1,8 @@
 """External Cerbos PDP client for the edge.
 
-Replaces the in-process cedarpy edge engine: the authorization DECISION for a
+Replaces the in-process edge engine: the authorization DECISION for a
 matched module route (or static prefix) is delegated to the central Cerbos PDP
-over HTTP (:3592). The decision surface mirrors the old CedarEdgeEngine so the
+over HTTP (:3592). The decision surface mirrors the old edge engine so the
 /auth handler changes stay minimal.
 
 Principal mapping: id ``user_id or "anonymous"``; roles ``{"service"}`` when the
