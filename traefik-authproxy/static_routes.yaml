@@ -1,0 +1,13 @@
+# Static prefix policies for gateway surfaces without an OpenAPI spec (UI
+# bundles). The DECISION is made by the Cerbos `static_api` resource policy
+# (see labs64.io-helm-charts/charts/cerbos/policies/static_api.yaml); these
+# entries only carry the routing prefix and the action id (`id`).
+static:
+  - id: checkout-ui
+    prefix: /checkout-ui
+    public: false
+    scopes: [admin-role, ecommerce-role]
+  - id: customer-portal-ui
+    prefix: /customer-portal-ui
+    public: false
+    scopes: [admin-role, default-roles-labs64io]

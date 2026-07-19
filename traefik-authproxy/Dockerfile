@@ -1,5 +1,3 @@
-# slim (glibc), not alpine: cedarpy (Cedar edge PDP, RFC-05 P2) publishes
-# manylinux wheels only — no musl build.
 FROM python:3.13-slim
 
 # Define build arguments
@@ -19,10 +17,11 @@ WORKDIR /home/${USER_NAME}
 COPY --chown=${USER_NAME}:${GROUP_NAME} requirements.txt .
 
 # Copy the FastAPI application (no longer single-file: policy_store.py holds the
-# in-memory auth-policy table, policy_sync.py the k8s discovery/fetch loop,
-# policy_bundle.py the signed-bundle policy source used in provenance mode,
-# cedar_edge.py the in-process Cedar edge PDP)
-COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py policy_sync.py policy_bundle.py cedar_edge.py ./
+# in-memory routing table, routes_loader.py loads the generated routes manifests
+# + static-route policies, authz_edge.py is the Cerbos PDP HTTP client). A
+# default static_routes.yaml ships as a fallback; the chart mounts ConfigMaps
+# over routes/ and static_routes.yaml.
+COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py routes_loader.py authz_edge.py static_routes.yaml ./
 
 # Install any needed packages specified in requirements.txt
 RUN python -m pip install --upgrade pip && \

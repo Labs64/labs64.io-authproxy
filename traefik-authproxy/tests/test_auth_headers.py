@@ -40,14 +40,14 @@ def test_uuid7_is_valid_uuid_version_7():
 def client(monkeypatch):
     store = traefik_authproxy.STORE
     store.set_static([
-        StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",), cedar_id="checkout-api"),
-        StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=(), cedar_id="checkout-docs"),
-    ], "mock-cedar")
+        StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",), static_id="checkout-api"),
+        StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=(), static_id="checkout-docs"),
+    ])
     class MockDecision:
         decision = "allow"
         reasons = []
         error = ""
-    monkeypatch.setattr(traefik_authproxy.CEDAR_ENGINE, "decide", lambda *a, **k: MockDecision())
+    monkeypatch.setattr(traefik_authproxy.AUTHZ_ENGINE, "decide", lambda *a, **k: MockDecision())
     return TestClient(app)
 
 
