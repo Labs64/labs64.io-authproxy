@@ -1,4 +1,4 @@
-"""Tests for the external Cerbos edge PDP client (RFC-07)."""
+"""Tests for the external Cerbos edge PDP client."""
 import sys
 import pathlib
 

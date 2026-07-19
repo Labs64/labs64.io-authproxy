@@ -1,4 +1,4 @@
-"""External Cerbos PDP client for the edge (RFC-07).
+"""External Cerbos PDP client for the edge.
 
 Replaces the in-process cedarpy edge engine: the authorization DECISION for a
 matched module route (or static prefix) is delegated to the central Cerbos PDP

@@ -45,7 +45,7 @@ TOKEN_SCOPES_CLAIM_PATHS = os.getenv(
 )
 # Dot-path into the JWT payload for the tenant identifier.
 TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
-# Central Cerbos PDP HTTP endpoint (RFC-07). The edge authorization decision is
+# Central Cerbos PDP HTTP endpoint. The edge authorization decision is
 # delegated here — no in-process policy engine.
 CERBOS_URL = os.getenv("CERBOS_URL", "http://localhost:3592")
 # Directory of generated routes manifests (ConfigMap-mounted). One *.yaml per
@@ -67,7 +67,7 @@ app_logger = logging.getLogger("traefik_authproxy")
 app_logger.setLevel(numeric_level)
 
 # Sensitive enforcement detail (user/tenant/scopes/resource) rides a dedicated
-# child logger so the Cedar testing phase can enable it WITHOUT turning the whole
+# child logger so the Cerbos testing phase can enable it WITHOUT turning the whole
 # app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
 authz_detail_logger = logging.getLogger("traefik_authproxy.authz.detail")
 

@@ -1,4 +1,4 @@
-"""Tests for the ConfigMap routes-manifest + static-route loaders (RFC-07)."""
+"""Tests for the ConfigMap routes-manifest + static-route loaders."""
 import sys
 import pathlib
 

@@ -4,6 +4,5 @@ python-jose[cryptography]==3.5.0
 requests==2.33.1
 PyYAML==6.0.3
 pydantic>=2.0
-# Cerbos PDP client (RFC-07): the edge authorization decision is delegated to
-# the central Cerbos PDP over HTTP.
+# Cerbos PDP client: the edge authorization decision is delegated to the central Cerbos PDP over HTTP.
 cerbos==0.15.1

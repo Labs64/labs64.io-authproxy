@@ -9,7 +9,7 @@ venv/
 .coverage
 htmlcov/
 
-# --- Cedar Policy Bundle ---
+# --- Policy Bundle ---
 build/
 dist/
 
