@@ -1,10 +1,4 @@
-# CI for the traefik-authproxy service (Python 3.13, FastAPI).
-# Runs the pytest suite and validates the Docker image builds.
-
 name: Labs64.IO - API Gateway - CI
-
-permissions:
-  contents: read
 
 on:
   push:
@@ -17,29 +11,25 @@ concurrency:
   group: gateway-ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: traefik-authproxy
+    uses: Labs64/labs64.io-workspace/.github/workflows/python-ci.yml@master
+    with:
+      working-directory: traefik-authproxy
+      install-command: pip install -r requirements.txt pytest
+      test-command: pytest -v
+      docker-context: traefik-authproxy
+      cache-dependency-path: traefik-authproxy/requirements.txt
 
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest
-
-    - name: Run tests
-      run: pytest -v
-
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag traefik-authproxy:ci-${{ github.sha }}
+  edge-image:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@master
+    with:
+      image: labs64/traefik-authproxy
+      context: ./traefik-authproxy
+      mode: edge
+    secrets: inherit
