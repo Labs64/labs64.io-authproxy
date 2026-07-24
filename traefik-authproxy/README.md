@@ -66,4 +66,4 @@ The middleware is configured using environment variables.
 
 ## License
 
-This project is licensed under the MIT License.
+The core of the *Labs64.IO Ecosystem* is entirely open source and free forever. Community modules are licensed under [Apache License 2.0](LICENSE).

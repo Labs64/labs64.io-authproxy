@@ -16,6 +16,6 @@ Key responsibilities of the API Gateway stack (Traefik + gateway-common + traefi
 - API Documentation: aggregated Swagger UI for all installed modules.
 - Monitoring and Logging: central point for tracking API usage and performance.
 
-## Star History
+## License
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Labs64/labs64.io-authproxy&type=Date)](https://www.star-history.com/#Labs64/labs64.io-authproxy&Date)
+The core of the *Labs64.IO Ecosystem* is entirely open source and free forever. Community modules are licensed under [Apache License 2.0](LICENSE).
