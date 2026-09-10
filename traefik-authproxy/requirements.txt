@@ -3,6 +3,6 @@ uvicorn==0.52.4
 python-jose[cryptography]==3.5.0
 requests==2.34.2
 PyYAML==6.0.3
-pydantic>=2.13.4
+pydantic>=2.13.5
 # Cerbos PDP client: the edge authorization decision is delegated to the central Cerbos PDP over HTTP.
 cerbos==0.16.0
