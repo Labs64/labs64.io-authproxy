@@ -23,7 +23,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 ## Auth proxy details
 
 - **App layout** (no longer single-file): `traefik_authproxy.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory routing table, OpenAPI-template matching) + `routes_loader.py` (loads the ConfigMap-mounted routes manifests + static-route policies) + `authz_edge.py` (Cerbos PDP HTTP client — the authorization decision).
-- **JWT verification**: `python-jose` with RS256. JWKS from OIDC provider via discovery URL.
+- **JWT verification**: `python-jose` with RS256. JWKS come from discovery; JWT `iss` must match explicit `OIDC_ISSUER` when configured, otherwise the discovered issuer. The explicit issuer is intentionally independent from the internal discovery transport URL.
 - **Scope extraction**: `TOKEN_SCOPES_CLAIM_PATHS` env var (comma-separated dot-paths, supports `{audience}` placeholder); union of the `scope` claim and Keycloak-style role claims.
 - **Path matching**: per-operation OpenAPI template matching from the generated routes manifests (`ROUTES_DIR`, one `<module>.routes.yaml` per module — `version/module/basePath/routes`, produced by the commons `OpenApiAuthPreprocessor --routes-output`), loaded by `routes_loader.load_routes_dir`. Plus static prefix policies (`STATIC_ROUTES_FILE`, `routes_loader.load_static_routes`). Module routes take priority; static prefixes (longest-prefix) are consulted only when no route template matches; no match at all fails closed (403).
 - **Hot reload**: `POST /reload` re-reads the routes manifests + static-route file from disk (e.g. after the ConfigMaps update), without restart.
@@ -56,6 +56,8 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 |----------|---------|-------------|
 | `OIDC_URL` | `http://mock-oidc.tools.svc.cluster.local:8080` | OIDC provider base URL |
 | `OIDC_REALM` | `default` | OIDC realm |
+| `OIDC_DISCOVERY_URL` | `{OIDC_URL}/realms/{OIDC_REALM}/.well-known/openid-configuration` | Discovery endpoint; may use an internal cluster URL |
+| `OIDC_ISSUER` | discovery document's `issuer` | Canonical JWT issuer; explicit value takes precedence over discovery metadata |
 | `OIDC_AUDIENCE` | `account` | Expected JWT audience |
 | `TOKEN_SCOPES_CLAIM_PATHS` | `scope,realm_access.roles,resource_access.{audience}.roles` | JWT claim paths for scopes |
 | `TOKEN_TENANT_CLAIM_PATH` | `tenant` | JWT dot-path for the tenant identifier (`X-Auth-Tenant`) |

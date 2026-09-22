@@ -45,6 +45,7 @@ The middleware is configured using environment variables.
 | `OIDC_URL`          | Base URL of the OIDC provider.                                     | `http://mock-oidc.tools.svc.cluster.local:8080`|
 | `OIDC_REALM`        | OIDC realm name (if applicable).                                   | `default`                                     |
 | `OIDC_DISCOVERY_URL`| Full URL to the OIDC discovery endpoint.                           | `{OIDC_URL}/realms/{OIDC_REALM}/.well-known/openid-configuration` |
+| `OIDC_ISSUER`       | Canonical JWT issuer; explicit value overrides discovery metadata. | Discovery document's `issuer`                 |
 | `OIDC_AUDIENCE`     | Audience claim to verify in the JWT.                               | `account`                                     |
 | `ROUTES_DIR`        | Directory containing generated routing manifests (`routes.yaml`) for each module. | `routes` |
 | `STATIC_ROUTES_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_routes.yaml`                        |
