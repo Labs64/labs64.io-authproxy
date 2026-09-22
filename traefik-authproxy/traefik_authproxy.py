@@ -34,6 +34,10 @@ OIDC_DISCOVERY_URL = os.getenv(
     f"{OIDC_URL}/realms/{OIDC_REALM}/.well-known/openid-configuration"
 )
 
+# Canonical token issuer. This may differ from the in-cluster discovery URL.
+# For example: https://keycloak.localhost/realms/labs64io.
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
+
 OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "account")
 # Comma-separated dot-paths into the JWT payload to collect scopes from.
 # Default is the union of the standard OAuth2 "scope" claim and the
@@ -194,7 +198,7 @@ _load_routes()
 
 # --- Startup log ---
 app_logger.info(
-    f"Config loaded — OIDC issuer: {OIDC_URL}, audience: {OIDC_AUDIENCE}, "
+    f"Config loaded — OIDC issuer: {OIDC_ISSUER or '<from discovery>'}, audience: {OIDC_AUDIENCE}, "
     f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, routes dir: {ROUTES_DIR}, "
     f"static routes file: {STATIC_ROUTES_FILE}, Cerbos PDP: {CERBOS_URL}, "
     f"JWKS cache TTL: {JWKS_CACHE_TTL}s"
@@ -259,6 +263,36 @@ async def ecosystem_global_exception_handler(request: Request, exc: Exception):
     return _ecosystem_error_response(request, 500, "Internal server error")
 
 # --- JWKS Loader with Discovery and TTL ---
+def _cache_discovery_metadata(document: Dict[str, Any]) -> None:
+    """Validate and cache security-sensitive OIDC discovery metadata."""
+    discovered_issuer = document.get("issuer")
+    if not discovered_issuer:
+        raise ValueError("Discovery document missing 'issuer'")
+
+    if OIDC_ISSUER and discovered_issuer != OIDC_ISSUER:
+        app_logger.warning(
+            "Discovery issuer %s differs from explicit JWT issuer %s",
+            discovered_issuer,
+            OIDC_ISSUER,
+        )
+
+    jwks_uri = document.get("jwks_uri")
+    if not jwks_uri:
+        raise ValueError("Discovery document missing 'jwks_uri'")
+
+    DISCOVERY_CACHE["issuer"] = discovered_issuer
+    DISCOVERY_CACHE["jwks_uri"] = jwks_uri
+
+
+def get_expected_issuer() -> str:
+    """Return the explicit JWT issuer, falling back to discovery metadata."""
+    if OIDC_ISSUER:
+        return OIDC_ISSUER
+    if "issuer" not in DISCOVERY_CACHE:
+        get_jwks()
+    return DISCOVERY_CACHE["issuer"]
+
+
 def get_jwks() -> Dict[str, Any]:
     """Fetch JWKS keys with TTL-based caching.
 
@@ -278,10 +312,7 @@ def get_jwks() -> Dict[str, Any]:
             app_logger.info(f"get_jwks::Fetching discovery doc from {OIDC_DISCOVERY_URL}")
             resp = requests.get(OIDC_DISCOVERY_URL, timeout=10)
             resp.raise_for_status()
-            jwks_uri = resp.json().get("jwks_uri")
-            if not jwks_uri:
-                raise ValueError("Discovery document missing 'jwks_uri'")
-            DISCOVERY_CACHE["jwks_uri"] = jwks_uri
+            _cache_discovery_metadata(resp.json())
 
         jwks_uri = DISCOVERY_CACHE["jwks_uri"]
         app_logger.info(f"get_jwks::Fetching JWKS from {jwks_uri}")
@@ -308,7 +339,8 @@ def verify_token(token: str) -> Dict[str, Any]:
             token,
             get_jwks(),
             algorithms=["RS256"],
-            audience=OIDC_AUDIENCE
+            audience=OIDC_AUDIENCE,
+            issuer=get_expected_issuer(),
         )
         app_logger.debug(f"verify_token::Decoded payload for sub={payload.get('sub')}")
         return payload
