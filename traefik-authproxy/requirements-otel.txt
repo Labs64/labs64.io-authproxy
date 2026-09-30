@@ -2,7 +2,7 @@
 # imported by application code. Auto-instrumentation is activated by entrypoint.sh
 # only when OTEL_EXPORTER_OTLP_ENDPOINT is set by the deployment.
 opentelemetry-distro==0.66b0
-opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.45.0
 opentelemetry-instrumentation-fastapi==0.65b0
 opentelemetry-instrumentation-logging==0.65b0
 opentelemetry-instrumentation-requests==0.65b0
