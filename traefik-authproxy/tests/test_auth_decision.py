@@ -167,3 +167,34 @@ def test_health_ready_200_after_routes_loaded(client):
     traefik_authproxy.STORE.set_module("test", TEST_ROUTES)
     response = client.get("/health/ready")
     assert response.status_code == 200
+
+
+def test_health_answers_while_auth_requests_block(store, monkeypatch):
+    # /auth does blocking work (JWT, JWKS, Cerbos). In an async handler it stalled the event loop, so
+    # under load /health missed its probe deadline and the kubelet restarted every replica.
+    import threading
+    import time
+    release = threading.Event()
+
+    def slow_decide(**kwargs):
+        release.wait(5)
+        return EdgeDecision("allow", [], None)
+
+    monkeypatch.setattr(traefik_authproxy.AUTHZ_ENGINE, "decide", slow_decide)
+    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {})
+    monkeypatch.setattr(traefik_authproxy, "_load_routes", lambda: None)
+    # One TestClient context = one event loop shared by every request, as under uvicorn.
+    with TestClient(app) as shared:
+        blocked = [threading.Thread(target=shared.get, args=("/auth",),
+                                    kwargs={"headers": {"X-Forwarded-Uri": "/public"}}) for _ in range(3)]
+        for t in blocked:
+            t.start()
+        time.sleep(0.3)
+        try:
+            started = time.monotonic()
+            assert shared.get("/health").status_code == 200
+            assert time.monotonic() - started < 1.0
+        finally:
+            release.set()
+            for t in blocked:
+                t.join()

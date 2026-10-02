@@ -1,6 +1,7 @@
 import os
 import re
 import secrets
+import threading
 import time
 import uuid
 import logging
@@ -25,6 +26,9 @@ from authz_edge import CerbosEdgeEngine
 DISCOVERY_CACHE: Dict[str, Any] = {}
 JWKS_CACHE: Dict[str, Any] = {}
 JWKS_CACHE_TIME: float = 0.0
+# Requests run in the thread pool: the JWKS is replaced (never mutated in place) under this lock, so a
+# request never verifies against a half-refreshed key set, and one thread refreshes while the rest wait.
+_JWKS_LOCK = threading.Lock()
 
 # --- Configuration ---
 OIDC_URL = os.getenv("OIDC_URL", "http://mock-oidc.tools.svc.cluster.local:8080")
@@ -215,6 +219,7 @@ async def lifespan(application: FastAPI):
         app_logger.warning(f"JWKS prefetch failed (will retry on first request): {e}")
     _load_routes()
     yield
+    AUTHZ_ENGINE.close()
 
 # --- App Initialization ---
 app = FastAPI(
@@ -300,13 +305,25 @@ def get_jwks() -> Dict[str, Any]:
     refreshed. This ensures that OIDC provider key rotation is picked up within
     the configured TTL window.
     """
-    global JWKS_CACHE_TIME
+    jwks = _cached_jwks()
+    if jwks is not None:
+        return jwks
+    with _JWKS_LOCK:
+        jwks = _cached_jwks()  # another thread may have refreshed it while this one waited
+        if jwks is not None:
+            return jwks
+        return _refresh_jwks()
 
-    now = time.monotonic()
-    if JWKS_CACHE and (now - JWKS_CACHE_TIME) < JWKS_CACHE_TTL:
-        app_logger.debug("get_jwks::Using cached JWKS (age: %.0fs)", now - JWKS_CACHE_TIME)
-        return JWKS_CACHE
 
+def _cached_jwks() -> Optional[Dict[str, Any]]:
+    jwks, fetched_at = JWKS_CACHE, JWKS_CACHE_TIME
+    if jwks and (time.monotonic() - fetched_at) < JWKS_CACHE_TTL:
+        return jwks
+    return None
+
+
+def _refresh_jwks() -> Dict[str, Any]:
+    global JWKS_CACHE, JWKS_CACHE_TIME
     try:
         if "jwks_uri" not in DISCOVERY_CACHE:
             app_logger.info(f"get_jwks::Fetching discovery doc from {OIDC_DISCOVERY_URL}")
@@ -318,8 +335,7 @@ def get_jwks() -> Dict[str, Any]:
         app_logger.info(f"get_jwks::Fetching JWKS from {jwks_uri}")
         resp = requests.get(jwks_uri, timeout=10)
         resp.raise_for_status()
-        JWKS_CACHE.clear()
-        JWKS_CACHE.update(resp.json())
+        JWKS_CACHE = resp.json()
         JWKS_CACHE_TIME = time.monotonic()
         app_logger.info("get_jwks::JWKS cache refreshed successfully")
         return JWKS_CACHE
@@ -456,8 +472,12 @@ def _log_authz(decision, *, method, path, resource_kind, action,
 # --- Authentication Endpoint ---
 @app.get("/auth", response_model=AuthResponse, tags=["Auth"])
 @app.post("/auth", response_model=AuthResponse, tags=["Auth"])
-async def authenticate(request: Request):
+def authenticate(request: Request):
     """Authenticate and authorize a request forwarded by Traefik.
+
+    A plain (sync) handler on purpose: FastAPI runs it in the thread pool. JWT verification, the JWKS
+    fetch and the Cerbos call all block; inside an ``async def`` they stalled the event loop, so under
+    load /health missed its probe deadline and the kubelet restarted every replica.
 
     Matches the forwarded method/path against the policy store (module routes
     from the generated routes manifests, falling back to static prefix

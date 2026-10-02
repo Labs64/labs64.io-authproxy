@@ -114,3 +114,33 @@ def test_wrong_token_issuer_is_unauthorized(monkeypatch):
 
     assert error.value.status_code == 401
     assert error.value.detail == "Invalid token: Invalid issuer"
+
+
+def test_concurrent_jwks_refresh_fetches_once_and_never_returns_an_empty_key_set(monkeypatch):
+    import threading
+    import time
+    traefik_authproxy.DISCOVERY_CACHE["jwks_uri"] = "http://idp/certs"
+    traefik_authproxy.DISCOVERY_CACHE["issuer"] = "http://idp"
+    fetches = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"keys": [{"kid": "k1"}]}
+
+    def fake_get(url, timeout):
+        fetches.append(url)
+        time.sleep(0.1)
+        return Resp()
+
+    monkeypatch.setattr(traefik_authproxy.requests, "get", fake_get)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(traefik_authproxy.get_jwks())) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert fetches == ["http://idp/certs"]
+    assert all(r == {"keys": [{"kid": "k1"}]} for r in results)

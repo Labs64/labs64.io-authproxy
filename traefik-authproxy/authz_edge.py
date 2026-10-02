@@ -9,8 +9,12 @@ Principal mapping: id ``user_id or "anonymous"``; roles ``{"service"}`` when the
 id carries the ``svc:`` prefix else ``{"user"}``; attrs carry ``scopes`` (and
 ``tenant`` only when present). Fail closed: anything the client/transport raises
 becomes an ``error`` decision, which the caller treats as deny.
+
+One client (an httpx connection pool, thread-safe) serves every decision. A client per call opened a
+new TCP connection to the PDP for each request.
 """
 import logging
+import threading
 from typing import List, NamedTuple, Optional
 
 from cerbos.sdk.client import CerbosClient
@@ -34,6 +38,24 @@ class CerbosEdgeEngine:
     def __init__(self, base_url: str, timeout_s: float = 2.0) -> None:
         self._base_url = base_url
         self._timeout = timeout_s
+        self._client = None
+        self._lock = threading.Lock()
+
+    def _get_client(self):
+        client = self._client
+        if client is None:
+            with self._lock:
+                if self._client is None:
+                    self._client = CerbosClient(host=self._base_url, timeout_secs=self._timeout,
+                                                raise_on_error=True)
+                client = self._client
+        return client
+
+    def close(self) -> None:
+        with self._lock:
+            client, self._client = self._client, None
+        if client is not None:
+            client.close()
 
     @property
     def pdp_url(self) -> str:
@@ -51,14 +73,12 @@ class CerbosEdgeEngine:
         if tenant:
             attr["tenant"] = tenant
         try:
-            with CerbosClient(host=self._base_url, timeout_secs=self._timeout,
-                              raise_on_error=True) as client:
-                allowed = client.is_allowed(
-                    action,
-                    Principal(subject, roles=roles, attr=attr),
-                    Resource(id=resource_id, kind=resource_kind),
-                    request_id=request_id,
-                )
+            allowed = self._get_client().is_allowed(
+                action,
+                Principal(subject, roles=roles, attr=attr),
+                Resource(id=resource_id, kind=resource_kind),
+                request_id=request_id,
+            )
             return EdgeDecision("allow" if allowed else "deny", [], None)
         except Exception as e:  # noqa: BLE001 — anything from client/transport ⇒ fail closed
             logger.error("Cerbos edge check failed for %s/%s: %s", resource_kind, action, e)
