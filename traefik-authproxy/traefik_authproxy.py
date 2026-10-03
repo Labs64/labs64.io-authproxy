@@ -15,8 +15,8 @@ from http import HTTPStatus
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from jose import jwt
-from jose.exceptions import JWTError, ExpiredSignatureError
+import jwt
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError, PyJWTError
 
 from policy_store import PolicyStore
 from routes_loader import load_routes_dir, load_static_routes
@@ -345,6 +345,22 @@ def _refresh_jwks() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to retrieve JWKS")
 
 # --- JWT Token Verifier ---
+def _signing_key(kid: str) -> Any:
+    """Return the RS256 public key published under ``kid`` in the cached JWKS.
+
+    JWKs are parsed one at a time so a key PyJWT cannot use (Keycloak publishes an RSA-OAEP
+    ``enc`` key beside the RS256 ``sig`` key) never poisons the rest of the key set.
+    """
+    for jwk in get_jwks().get("keys", []):
+        if jwk.get("kid") != kid or jwk.get("use", "sig") != "sig":
+            continue
+        try:
+            return jwt.PyJWK.from_dict(jwk, algorithm="RS256").key
+        except PyJWTError:
+            continue
+    raise InvalidTokenError(f"No signing key found for kid '{kid}'")
+
+
 def verify_token(token: str) -> Dict[str, Any]:
     try:
         kid = jwt.get_unverified_header(token).get("kid")
@@ -353,17 +369,20 @@ def verify_token(token: str) -> Dict[str, Any]:
 
         payload = jwt.decode(
             token,
-            get_jwks(),
+            _signing_key(kid),
             algorithms=["RS256"],
             audience=OIDC_AUDIENCE,
             issuer=get_expected_issuer(),
+            # iat is informational here; exp/nbf/aud/iss are enforced. Rejecting a token whose
+            # iat is a few seconds ahead of this pod's clock would only turn skew into 401s.
+            options={"verify_iat": False},
         )
         app_logger.debug(f"verify_token::Decoded payload for sub={payload.get('sub')}")
         return payload
 
     except ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except JWTError as e:
+    except PyJWTError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
     except HTTPException:
         raise

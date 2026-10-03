@@ -12,7 +12,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 | Path | Service | Stack | Port |
 |------|---------|-------|------|
-| `traefik-authproxy/` | Auth proxy | Python 3.13, FastAPI | 8081 |
+| `traefik-authproxy/` | Auth proxy | Python 3.14, FastAPI | 8081 |
 
 ## Critical guardrails
 
@@ -23,7 +23,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 ## Auth proxy details
 
 - **App layout** (no longer single-file): `traefik_authproxy.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory routing table, OpenAPI-template matching) + `routes_loader.py` (loads the ConfigMap-mounted routes manifests + static-route policies) + `authz_edge.py` (Cerbos PDP HTTP client — the authorization decision).
-- **JWT verification**: `python-jose` with RS256. JWKS come from discovery; JWT `iss` must match explicit `OIDC_ISSUER` when configured, otherwise the discovered issuer. The explicit issuer is intentionally independent from the internal discovery transport URL.
+- **JWT verification**: `PyJWT` (with the `crypto` extra) with RS256 only. JWKS come from discovery; JWT `iss` must match explicit `OIDC_ISSUER` when configured, otherwise the discovered issuer. The explicit issuer is intentionally independent from the internal discovery transport URL.
 - **Scope extraction**: `TOKEN_SCOPES_CLAIM_PATHS` env var (comma-separated dot-paths, supports `{audience}` placeholder); union of the `scope` claim and Keycloak-style role claims.
 - **Path matching**: per-operation OpenAPI template matching from the generated routes manifests (`ROUTES_DIR`, one `<module>.routes.yaml` per module — `version/module/basePath/routes`, produced by the commons `OpenApiAuthPreprocessor --routes-output`), loaded by `routes_loader.load_routes_dir`. Plus static prefix policies (`STATIC_ROUTES_FILE`, `routes_loader.load_static_routes`). Module routes take priority; static prefixes (longest-prefix) are consulted only when no route template matches; no match at all fails closed (403).
 - **Hot reload**: `POST /reload` re-reads the routes manifests + static-route file from disk (e.g. after the ConfigMaps update), without restart.

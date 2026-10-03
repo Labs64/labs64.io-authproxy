@@ -1,7 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from jose import JWTError
-
+import jwt_helpers
 import traefik_authproxy
 
 
@@ -68,49 +67,32 @@ def test_discovered_issuer_is_used_when_not_explicitly_configured(monkeypatch):
     assert traefik_authproxy.get_expected_issuer() == issuer
 
 
-def test_verify_token_passes_discovery_issuer_to_jose(monkeypatch):
+def test_verify_token_enforces_the_discovered_issuer_and_audience(monkeypatch):
     issuer = "https://keycloak.localhost/realms/labs64io"
-    decode_kwargs = {}
-
-    monkeypatch.setattr(
-        traefik_authproxy.jwt,
-        "get_unverified_header",
-        lambda _token: {"kid": "test-key"},
-    )
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": []})
+    key = jwt_helpers.make_key("test-key")
+    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [key.jwk]})
     monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: issuer)
 
-    def decode(_token, _keys, **kwargs):
-        decode_kwargs.update(kwargs)
-        return {"sub": "service-client"}
+    payload = traefik_authproxy.verify_token(
+        key.sign({"sub": "service-client", "iss": issuer, "aud": traefik_authproxy.OIDC_AUDIENCE})
+    )
 
-    monkeypatch.setattr(traefik_authproxy.jwt, "decode", decode)
-
-    assert traefik_authproxy.verify_token("token") == {"sub": "service-client"}
-    assert decode_kwargs["issuer"] == issuer
-    assert decode_kwargs["audience"] == traefik_authproxy.OIDC_AUDIENCE
+    assert payload["sub"] == "service-client"
 
 
 def test_wrong_token_issuer_is_unauthorized(monkeypatch):
-    monkeypatch.setattr(
-        traefik_authproxy.jwt,
-        "get_unverified_header",
-        lambda _token: {"kid": "test-key"},
-    )
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": []})
+    key = jwt_helpers.make_key("test-key")
+    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [key.jwk]})
     monkeypatch.setattr(
         traefik_authproxy,
         "get_expected_issuer",
         lambda: "https://keycloak.localhost/realms/labs64io",
     )
-    monkeypatch.setattr(
-        traefik_authproxy.jwt,
-        "decode",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(JWTError("Invalid issuer")),
-    )
 
     with pytest.raises(HTTPException) as error:
-        traefik_authproxy.verify_token("token")
+        traefik_authproxy.verify_token(
+            key.sign({"sub": "x", "iss": "https://evil.example/realm", "aud": traefik_authproxy.OIDC_AUDIENCE})
+        )
 
     assert error.value.status_code == 401
     assert error.value.detail == "Invalid token: Invalid issuer"
