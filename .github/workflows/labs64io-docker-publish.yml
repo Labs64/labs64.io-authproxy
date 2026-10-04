@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@master
+    uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@v1
     with:
       image: labs64/traefik-authproxy
       context: ./traefik-authproxy
@@ -22,7 +22,7 @@ jobs:
   propagate-to-chart:
     name: Pin digest in charts/api-gateway
     needs: publish
-    uses: Labs64/labs64.io-workspace/.github/workflows/chart-update-dispatch.yml@master
+    uses: Labs64/labs64.io-workspace/.github/workflows/chart-update-dispatch.yml@v1
     with:
       chart: api-gateway
       version: ${{ github.event.release.tag_name }}

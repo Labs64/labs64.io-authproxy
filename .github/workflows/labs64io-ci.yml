@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    uses: Labs64/labs64.io-workspace/.github/workflows/python-ci.yml@master
+    uses: Labs64/labs64.io-workspace/.github/workflows/python-ci.yml@v1
     with:
       working-directory: traefik-authproxy
       install-command: pip install -r requirements.txt pytest
@@ -27,7 +27,7 @@ jobs:
   edge-image:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@master
+    uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@v1
     with:
       image: labs64/traefik-authproxy
       context: ./traefik-authproxy
