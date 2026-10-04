@@ -48,6 +48,12 @@ def test_expired_token_is_reported_as_expired(key):
     assert unauthorized(key.sign(claims(exp=int(time.time()) - 60))) == "Token expired"
 
 
+def test_token_without_expiry_is_rejected(key):
+    """A token with no exp would otherwise be valid forever."""
+    token = jwt.encode(claims(), key.private_key, algorithm="RS256", headers={"kid": key.kid})
+    assert unauthorized(token).startswith("Invalid token")
+
+
 def test_token_not_yet_valid_is_rejected(key):
     assert unauthorized(key.sign(claims(nbf=int(time.time()) + 600))).startswith("Invalid token")
 

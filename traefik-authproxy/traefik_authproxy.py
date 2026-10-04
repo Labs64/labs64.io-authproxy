@@ -375,7 +375,9 @@ def verify_token(token: str) -> Dict[str, Any]:
             issuer=get_expected_issuer(),
             # iat is informational here; exp/nbf/aud/iss are enforced. Rejecting a token whose
             # iat is a few seconds ahead of this pod's clock would only turn skew into 401s.
-            options={"verify_iat": False},
+            # exp is required: PyJWT only checks it when present, and a token without one
+            # would never expire.
+            options={"verify_iat": False, "require": ["exp"]},
         )
         app_logger.debug(f"verify_token::Decoded payload for sub={payload.get('sub')}")
         return payload
