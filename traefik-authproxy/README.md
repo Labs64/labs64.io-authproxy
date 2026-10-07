@@ -11,7 +11,7 @@ It receives incoming requests from Traefik, validates the JWT token, extracts us
 - **JWT Verification**: Validates tokens issued by an OIDC provider using public keys from the `.well-known` endpoint.
 - **Scope-Based Access Control**: Enforces access based on scopes assigned to the user/client via Cerbos.
 - **Dynamic Route Manifests**: Route metadata (mapping paths/methods to module operations) is loaded dynamically from `ROUTES_DIR` manifests. Non-OpenAPI surfaces fall back to static prefix policies defined in a configurable YAML file.
-- **TTL-based JWKS Caching**: Automatically refreshes signing keys when the OIDC provider rotates them (configurable via `JWKS_CACHE_TTL`).
+- **JWKS Caching**: Signing keys are cached for `JWKS_CACHE_TTL`. A token signed with a key the cache does not have (key rotation) triggers a refresh ahead of the TTL, at most once per `JWKS_REFRESH_MIN_INTERVAL`. When a refresh fails, the previous keys stay in use for up to `JWKS_MAX_STALE`, so a short provider outage does not fail requests.
 - **Identity Forwarding**: On successful authentication, sets `X-Auth-User` and `X-Auth-Scopes` response headers for Traefik to forward to upstream services.
 - **Correlation ID Propagation**: Propagates `X-Correlation-ID` headers for distributed tracing across the Labs64.IO ecosystem.
 - **Hot Reload**: Route manifests can be reloaded at runtime via the `POST /reload` endpoint without container restart.
@@ -50,6 +50,8 @@ The middleware is configured using environment variables.
 | `ROUTES_DIR`        | Directory containing generated routing manifests (`routes.yaml`) for each module. | `routes` |
 | `STATIC_ROUTES_FILE`| Path to the YAML file defining static prefix policies for non-OpenAPI surfaces (UI bundles). | `static_routes.yaml`                        |
 | `JWKS_CACHE_TTL`    | JWKS cache TTL in seconds. Controls how quickly key rotation is picked up. | `3600` (1 hour)                        |
+| `JWKS_REFRESH_MIN_INTERVAL` | Minimum seconds between refreshes triggered by a token with an unknown key id. | `60` |
+| `JWKS_MAX_STALE` | Seconds the cached keys stay in use past the TTL while the provider cannot be reached; after that requests fail with 500. | `86400` (24 hours) |
 | `CERBOS_URL`        | URL of the central Cerbos Policy Decision Point (PDP).             | `http://localhost:3592` |
 | `LOG_LEVEL`         | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).               | `INFO`                                        |
 

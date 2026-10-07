@@ -21,6 +21,7 @@ def key(monkeypatch):
     monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", AUDIENCE)
     monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: ISSUER)
     monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [k.jwk]})
+    monkeypatch.setattr(traefik_authproxy, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [k.jwk]})
     return k
 
 
@@ -113,6 +114,7 @@ def test_keycloak_style_jwks_with_an_encryption_key_still_verifies(monkeypatch):
     monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", AUDIENCE)
     monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: ISSUER)
     monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [enc.jwk, sig.jwk]})
+    monkeypatch.setattr(traefik_authproxy, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [enc.jwk, sig.jwk]})
 
     assert traefik_authproxy.verify_token(sig.sign(claims()))["sub"] == "user-1"
     assert unauthorized(enc.sign(claims())).startswith("Invalid token")

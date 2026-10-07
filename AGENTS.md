@@ -28,7 +28,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 - **Path matching**: per-operation OpenAPI template matching from the generated routes manifests (`ROUTES_DIR`, one `<module>.routes.yaml` per module — `version/module/basePath/routes`, produced by the commons `OpenApiAuthPreprocessor --routes-output`), loaded by `routes_loader.load_routes_dir`. Plus static prefix policies (`STATIC_ROUTES_FILE`, `routes_loader.load_static_routes`). Module routes take priority; static prefixes (longest-prefix) are consulted only when no route template matches; no match at all fails closed (403).
 - **Hot reload**: `POST /reload` re-reads the routes manifests + static-route file from disk (e.g. after the ConfigMaps update), without restart.
 - **Readiness**: `GET /health/ready` returns 503 until at least one module's routes have loaded; `GET /health` is the liveness probe (also reports `pdp_url`).
-- **JWKS caching**: TTL-based (`JWKS_CACHE_TTL`, default 3600s). Prefetched on startup.
+- **JWKS caching**: TTL-based (`JWKS_CACHE_TTL`, default 3600s). Prefetched on startup. An unknown `kid` refreshes ahead of the TTL, rate-limited by `JWKS_REFRESH_MIN_INTERVAL` (a made-up `kid` must not become a call to the provider per request). A failed refresh keeps the previous keys for up to `JWKS_MAX_STALE`, retried every 10 s by one thread while the others keep answering.
 - **Cerbos edge decision**: the central Cerbos PDP (`CERBOS_URL`, HTTP :3592) IS the decision for module routes. Once `policy_store` matches a route, `authz_edge.CerbosEdgeEngine` issues one `is_allowed` check: resource kind `<module>_api` (e.g. `payment-gateway` → `payment_gateway_api`), action = operationId, principal id = user (`svc:`-prefixed → role `service`, else `user`) with `scopes`/`tenant` attrs. Static prefixes map to kind `static_api`, action = the static id. PDP/transport errors and unknown operations fail closed (deny).
 
   #### Enforcement logging
@@ -65,6 +65,8 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 | `ROUTES_DIR` | `routes` | Directory of generated `<module>.routes.yaml` manifests (ConfigMap-mounted) |
 | `STATIC_ROUTES_FILE` | `static_routes.yaml` | Static prefix policies for non-OpenAPI surfaces (UI bundles) |
 | `JWKS_CACHE_TTL` | `3600` | JWKS cache TTL (seconds) |
+| `JWKS_REFRESH_MIN_INTERVAL` | `60` | Minimum seconds between refreshes triggered by an unknown `kid` |
+| `JWKS_MAX_STALE` | `86400` | Seconds stale keys stay in use while the provider is unreachable |
 
 
 ## Build, run, test

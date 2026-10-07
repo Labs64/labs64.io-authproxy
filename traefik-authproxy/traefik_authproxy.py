@@ -26,6 +26,8 @@ from authz_edge import CerbosEdgeEngine
 DISCOVERY_CACHE: Dict[str, Any] = {}
 JWKS_CACHE: Dict[str, Any] = {}
 JWKS_CACHE_TIME: float = 0.0
+# When the provider was last asked for its keys, successfully or not (monotonic; None = never).
+JWKS_LAST_ATTEMPT: Optional[float] = None
 # Requests run in the thread pool: the JWKS is replaced (never mutated in place) under this lock, so a
 # request never verifies against a half-refreshed key set, and one thread refreshes while the rest wait.
 _JWKS_LOCK = threading.Lock()
@@ -65,6 +67,15 @@ STATIC_ROUTES_FILE = os.getenv("STATIC_ROUTES_FILE", "static_routes.yaml")
 # JWKS cache TTL in seconds (default: 1 hour).
 # OIDC provider key rotation will be picked up after this interval.
 JWKS_CACHE_TTL = int(os.getenv("JWKS_CACHE_TTL", "3600"))
+# A token signed with a key that is not in the cache (the provider rotated its keys) triggers a
+# refresh ahead of the TTL, at most once per this many seconds: tokens with made-up key ids must not
+# turn every request into a call to the provider.
+JWKS_REFRESH_MIN_INTERVAL = int(os.getenv("JWKS_REFRESH_MIN_INTERVAL", "60"))
+# How long the cached keys stay in use past the TTL while the provider cannot be reached. Beyond it
+# requests fail (500) rather than trust keys the provider may have withdrawn.
+JWKS_MAX_STALE = int(os.getenv("JWKS_MAX_STALE", "86400"))
+# Pause between attempts to reach the provider after a failed refresh.
+JWKS_RETRY_INTERVAL = 10
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = "%(asctime)s - %(levelname)s - [%(name)s] %(message)s"
@@ -205,7 +216,8 @@ app_logger.info(
     f"Config loaded — OIDC issuer: {OIDC_ISSUER or '<from discovery>'}, audience: {OIDC_AUDIENCE}, "
     f"scope-claim paths: {TOKEN_SCOPES_CLAIM_PATHS}, routes dir: {ROUTES_DIR}, "
     f"static routes file: {STATIC_ROUTES_FILE}, Cerbos PDP: {CERBOS_URL}, "
-    f"JWKS cache TTL: {JWKS_CACHE_TTL}s"
+    f"JWKS cache TTL: {JWKS_CACHE_TTL}s (refresh on unknown key at most every "
+    f"{JWKS_REFRESH_MIN_INTERVAL}s, stale keys used for up to {JWKS_MAX_STALE}s)"
 )
 
 # --- Lifespan (prefetch JWKS on startup) ---
@@ -299,20 +311,25 @@ def get_expected_issuer() -> str:
 
 
 def get_jwks() -> Dict[str, Any]:
-    """Fetch JWKS keys with TTL-based caching.
+    """Return the provider's keys, refreshing them once they are older than JWKS_CACHE_TTL.
 
-    If the cached keys are older than JWKS_CACHE_TTL seconds, the cache is
-    refreshed. This ensures that OIDC provider key rotation is picked up within
-    the configured TTL window.
+    When the refresh fails, the previous keys stay in use for up to JWKS_MAX_STALE seconds: a short
+    provider outage must not fail every request while the keys it published are still valid.
     """
     jwks = _cached_jwks()
     if jwks is not None:
         return jwks
-    with _JWKS_LOCK:
+    # With usable previous keys only one thread waits on the provider; the others carry on with
+    # those keys instead of queueing behind a request that may run into its timeout.
+    if not _JWKS_LOCK.acquire(blocking=_stale_jwks() is None):
+        return _stale_jwks() or JWKS_CACHE
+    try:
         jwks = _cached_jwks()  # another thread may have refreshed it while this one waited
         if jwks is not None:
             return jwks
         return _refresh_jwks()
+    finally:
+        _JWKS_LOCK.release()
 
 
 def _cached_jwks() -> Optional[Dict[str, Any]]:
@@ -322,43 +339,97 @@ def _cached_jwks() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _refresh_jwks() -> Dict[str, Any]:
-    global JWKS_CACHE, JWKS_CACHE_TIME
-    try:
-        if "jwks_uri" not in DISCOVERY_CACHE:
-            app_logger.info(f"get_jwks::Fetching discovery doc from {OIDC_DISCOVERY_URL}")
-            resp = requests.get(OIDC_DISCOVERY_URL, timeout=10)
-            resp.raise_for_status()
-            _cache_discovery_metadata(resp.json())
+def _stale_jwks() -> Optional[Dict[str, Any]]:
+    """The cached keys while they may still be used, fresh or not (see JWKS_MAX_STALE)."""
+    jwks, fetched_at = JWKS_CACHE, JWKS_CACHE_TIME
+    if jwks and (time.monotonic() - fetched_at) < JWKS_CACHE_TTL + JWKS_MAX_STALE:
+        return jwks
+    return None
 
-        jwks_uri = DISCOVERY_CACHE["jwks_uri"]
-        app_logger.info(f"get_jwks::Fetching JWKS from {jwks_uri}")
-        resp = requests.get(jwks_uri, timeout=10)
+
+def _seconds_since_last_attempt() -> float:
+    return float("inf") if JWKS_LAST_ATTEMPT is None else time.monotonic() - JWKS_LAST_ATTEMPT
+
+
+def _fetch_jwks() -> Dict[str, Any]:
+    if "jwks_uri" not in DISCOVERY_CACHE:
+        app_logger.info(f"get_jwks::Fetching discovery doc from {OIDC_DISCOVERY_URL}")
+        resp = requests.get(OIDC_DISCOVERY_URL, timeout=10)
         resp.raise_for_status()
-        JWKS_CACHE = resp.json()
-        JWKS_CACHE_TIME = time.monotonic()
-        app_logger.info("get_jwks::JWKS cache refreshed successfully")
-        return JWKS_CACHE
+        _cache_discovery_metadata(resp.json())
 
+    jwks_uri = DISCOVERY_CACHE["jwks_uri"]
+    app_logger.info(f"get_jwks::Fetching JWKS from {jwks_uri}")
+    resp = requests.get(jwks_uri, timeout=10)
+    resp.raise_for_status()
+    jwks = resp.json()
+    # An answer without keys (an error document served with 200) must not replace a usable key set.
+    if not isinstance(jwks, dict) or not jwks.get("keys"):
+        raise ValueError("JWKS document has no keys")
+    return jwks
+
+
+def _refresh_jwks() -> Dict[str, Any]:
+    """Fetch the keys (caller holds _JWKS_LOCK). On failure, fall back to the previous keys."""
+    global JWKS_CACHE, JWKS_CACHE_TIME, JWKS_LAST_ATTEMPT
+    stale = _stale_jwks()
+    # After a failed refresh the provider is asked again only every JWKS_RETRY_INTERVAL seconds;
+    # in between, requests are answered from the previous keys without waiting on a timeout.
+    if stale is not None and _seconds_since_last_attempt() < JWKS_RETRY_INTERVAL:
+        return stale
+    JWKS_LAST_ATTEMPT = time.monotonic()
+    try:
+        jwks = _fetch_jwks()
     except (requests.RequestException, ValueError) as e:
+        if stale is not None:
+            app_logger.error(f"get_jwks::Refresh failed, using the previous keys: {e}")
+            return stale
         app_logger.error(f"get_jwks::Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve JWKS")
+    JWKS_CACHE = jwks
+    JWKS_CACHE_TIME = time.monotonic()
+    app_logger.info("get_jwks::JWKS cache refreshed successfully")
+    return JWKS_CACHE
+
+
+def _refresh_jwks_for_unknown_kid(kid: str) -> Dict[str, Any]:
+    """Refresh ahead of the TTL because a token names a key the cache does not have.
+
+    Rate-limited by JWKS_REFRESH_MIN_INTERVAL; within the interval the cached keys are returned as
+    they are (another thread may just have refreshed them).
+    """
+    with _JWKS_LOCK:
+        if _seconds_since_last_attempt() < JWKS_REFRESH_MIN_INTERVAL:
+            return JWKS_CACHE
+        app_logger.info(f"get_jwks::Unknown key id '{kid}', refreshing the JWKS ahead of the TTL")
+        return _refresh_jwks()
 
 # --- JWT Token Verifier ---
-def _signing_key(kid: str) -> Any:
-    """Return the RS256 public key published under ``kid`` in the cached JWKS.
-
-    JWKs are parsed one at a time so a key PyJWT cannot use (Keycloak publishes an RSA-OAEP
-    ``enc`` key beside the RS256 ``sig`` key) never poisons the rest of the key set.
-    """
-    for jwk in get_jwks().get("keys", []):
+def _find_signing_key(jwks: Dict[str, Any], kid: str) -> Any:
+    for jwk in jwks.get("keys", []):
         if jwk.get("kid") != kid or jwk.get("use", "sig") != "sig":
             continue
         try:
             return jwt.PyJWK.from_dict(jwk, algorithm="RS256").key
         except PyJWTError:
             continue
-    raise InvalidTokenError(f"No signing key found for kid '{kid}'")
+    return None
+
+
+def _signing_key(kid: str) -> Any:
+    """Return the RS256 public key published under ``kid``.
+
+    JWKs are parsed one at a time so a key PyJWT cannot use (Keycloak publishes an RSA-OAEP
+    ``enc`` key beside the RS256 ``sig`` key) never poisons the rest of the key set. A ``kid`` the
+    cache does not have is looked up once more after a (rate-limited) refresh: after a key rotation
+    the provider signs with a key published since the last fetch.
+    """
+    key = _find_signing_key(get_jwks(), kid)
+    if key is None:
+        key = _find_signing_key(_refresh_jwks_for_unknown_kid(kid), kid)
+    if key is None:
+        raise InvalidTokenError(f"No signing key found for kid '{kid}'")
+    return key
 
 
 def verify_token(token: str) -> Dict[str, Any]:
