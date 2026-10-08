@@ -5,14 +5,14 @@ LOCAL_OIDC_DOCKER := "http://host.docker.internal:8080"
 LOCAL_CLIENT_ID := "audit-service-client"
 LOCAL_CLIENT_SECRET := "mTEqlt1dDzcVyEOzFjBZV4X8jvEkaQnc"
 
-# build application
+# Build the Docker image and push it to the local registry
 docker:
     docker build -t {{APP_NAME}}:latest .
     docker tag {{APP_NAME}}:latest localhost:5005/{{APP_NAME}}:latest
     docker push localhost:5005/{{APP_NAME}}:latest
     docker images | grep "{{APP_NAME}}"
 
-# run docker image
+# Build the image, then run it locally on port 8081
 run: docker
     docker run -p 8081:8081 \
       -e OIDC_DISCOVERY_URL="{{LOCAL_OIDC_DOCKER}}/labs64io/.well-known/openid-configuration" \
@@ -23,12 +23,12 @@ run: docker
       -v $(pwd)/static_routes.yaml:/home/l64user/static_routes.yaml \
       {{APP_NAME}}:latest
 
-# open documentation
+# Open the ReDoc and Swagger docs in the browser
 docu:
     open "http://localhost:8081/redoc"
     open "http://localhost:8081/docs"
 
-# check updates
+# Show outdated Python packages and scan the Docker image for CVEs
 check-updates:
     python3 -m venv temp_env
     temp_env/bin/python3 -m pip install --upgrade pip
@@ -37,11 +37,11 @@ check-updates:
     rm -rf temp_env
     docker scout cves {{APP_NAME}}:latest
 
-# open OIDC well-known configuration
+# Open the local OIDC discovery document in the browser
 test-show-wellknown:
     open "{{LOCAL_OIDC}}/labs64io/.well-known/openid-configuration"
 
-# generate JWT token
+# Request a JWT from the local OIDC server using client credentials
 test-generate-jwt-token:
     curl --location --request POST '{{LOCAL_OIDC}}/labs64io/token' \
     --header 'Content-Type: application/x-www-form-urlencoded' \
