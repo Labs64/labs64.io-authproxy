@@ -60,5 +60,6 @@ USER ${USER_NAME}
 # entrypoint.sh enables OTel auto-instrumentation iff OTEL_EXPORTER_OTLP_ENDPOINT is set
 ENTRYPOINT ["./entrypoint.sh"]
 
-# Run the FastAPI application using Uvicorn
-CMD ["uvicorn", "traefik_authproxy:app", "--host", "0.0.0.0", "--port", "8081"]
+# Run the FastAPI application using Uvicorn. No "Server: uvicorn" header: Traefik hands a denied
+# request's 401/403 to the caller with this service's headers, and they should not name the server.
+CMD ["uvicorn", "traefik_authproxy:app", "--host", "0.0.0.0", "--port", "8081", "--no-server-header"]
