@@ -140,3 +140,82 @@ def test_concurrent_first_calls_build_one_client(monkeypatch):
     for t in threads:
         t.join()
     assert captured["created"] == 1
+
+
+# --- decision cache (off by default) ---
+
+def _clock(monkeypatch, start=1000.0):
+    now = {"t": start}
+    monkeypatch.setattr(authz_edge.time, "monotonic", lambda: now["t"])
+    return now
+
+
+def test_cache_is_off_by_default(monkeypatch):
+    captured = _patch(monkeypatch, allowed=True)
+    engine = CerbosEdgeEngine("http://pdp:3592")
+    _decide(engine)
+    _decide(engine)
+    assert len(captured["client"].calls) == 2
+
+
+def test_cached_decision_skips_the_pdp_until_the_ttl(monkeypatch):
+    now = _clock(monkeypatch)
+    captured = _patch(monkeypatch, allowed=True)
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=5)
+    assert _decide(engine).decision == "allow"
+    now["t"] += 4.9
+    assert _decide(engine).decision == "allow"
+    assert len(captured["client"].calls) == 1
+    now["t"] += 0.2  # past the TTL
+    assert _decide(engine).decision == "allow"
+    assert len(captured["client"].calls) == 2
+
+
+def test_a_deny_is_cached_too(monkeypatch):
+    captured = _patch(monkeypatch, allowed=False)
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=5)
+    assert _decide(engine).decision == "deny"
+    assert _decide(engine).decision == "deny"
+    assert len(captured["client"].calls) == 1
+
+
+def test_every_input_of_the_decision_is_part_of_the_key(monkeypatch):
+    captured = _patch(monkeypatch, allowed=True)
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=5)
+    _decide(engine)
+    for over in ({"user_id": "bob"}, {"scopes": ["payment:read"]}, {"tenant": "t_200"},
+                 {"tenant": None}, {"action": "refund"}, {"resource_kind": "checkout_api"},
+                 {"resource_id": "payment-gateway::other"}):
+        before = len(captured["client"].calls)
+        _decide(engine, **over)
+        assert len(captured["client"].calls) == before + 1, over
+
+
+def test_an_error_is_never_cached_and_still_fails_closed(monkeypatch):
+    captured = _patch(monkeypatch, raise_on="call")
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=5)
+    assert _decide(engine).decision == "error"
+    assert _decide(engine).decision == "error"
+    assert len(captured["client"].calls) == 2
+    captured["client"].raise_on = None
+    captured["client"].allowed = True
+    assert _decide(engine).decision == "allow"  # recovered at once: the error was not remembered
+
+
+def test_clear_cache_forgets_decisions(monkeypatch):
+    captured = _patch(monkeypatch, allowed=True)
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=5)
+    _decide(engine)
+    engine.clear_cache()
+    _decide(engine)
+    assert len(captured["client"].calls) == 2
+
+
+def test_the_cache_is_bounded(monkeypatch):
+    _clock(monkeypatch)
+    captured = _patch(monkeypatch, allowed=True)
+    engine = CerbosEdgeEngine("http://pdp:3592", decision_cache_ttl_s=60, decision_cache_max=3)
+    for i in range(10):
+        _decide(engine, user_id=f"user-{i}")
+    assert len(engine._cache) <= 3
+    assert len(captured["client"].calls) == 10

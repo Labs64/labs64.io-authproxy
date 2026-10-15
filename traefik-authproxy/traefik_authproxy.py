@@ -59,6 +59,11 @@ TOKEN_TENANT_CLAIM_PATH = os.getenv("TOKEN_TENANT_CLAIM_PATH", "tenant")
 # delegated here — no in-process policy engine.
 CERBOS_URL = os.getenv("CERBOS_URL", "http://localhost:3592")
 CERBOS_TIMEOUT = float(os.getenv("CERBOS_TIMEOUT", "2.0"))
+# Seconds a PDP allow/deny answer is reused for the same caller, operation and resource (0 = off, the
+# default: every request asks the PDP). A policy change in the PDP is then seen up to this long later;
+# errors are never cached. Keep it to a few seconds.
+AUTHZ_DECISION_CACHE_TTL = float(os.getenv("AUTHZ_DECISION_CACHE_TTL", "0"))
+AUTHZ_DECISION_CACHE_MAX = int(os.getenv("AUTHZ_DECISION_CACHE_MAX", "2048"))
 # Directory of generated routes manifests (ConfigMap-mounted). One *.yaml per
 # module (version/module/basePath/routes) — the routing table source.
 ROUTES_DIR = os.getenv("ROUTES_DIR", "routes")
@@ -191,7 +196,9 @@ class ReloadResponse(BaseModel):
 
 # --- Policy Store + Cerbos edge PDP client ---
 STORE = PolicyStore()
-AUTHZ_ENGINE = CerbosEdgeEngine(CERBOS_URL, timeout_s=CERBOS_TIMEOUT)
+AUTHZ_ENGINE = CerbosEdgeEngine(CERBOS_URL, timeout_s=CERBOS_TIMEOUT,
+                                decision_cache_ttl_s=AUTHZ_DECISION_CACHE_TTL,
+                                decision_cache_max=AUTHZ_DECISION_CACHE_MAX)
 
 
 def _load_routes() -> None:
@@ -531,6 +538,7 @@ async def reload_policies():
     Useful when the routes/static ConfigMaps are updated in Kubernetes.
     """
     _load_routes()
+    AUTHZ_ENGINE.clear_cache()
     app_logger.info("Routes and static policies reloaded via /reload endpoint")
     stats = STORE.stats()
     return ReloadResponse(message="Policies reloaded successfully", **stats)

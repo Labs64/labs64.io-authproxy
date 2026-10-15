@@ -12,10 +12,17 @@ becomes an ``error`` decision, which the caller treats as deny.
 
 One client (an httpx connection pool, thread-safe) serves every decision. A client per call opened a
 new TCP connection to the PDP for each request.
+
+Optional decision cache (``decision_cache_ttl_s`` > 0, off by default): a decision is a pure function of
+(principal id, roles, scopes, tenant, resource kind, action, resource id), so repeated calls by the same
+caller to the same operation can be answered locally for a few seconds instead of costing a PDP round
+trip each. Only a definite allow or deny is cached, never an ``error`` (fail closed stays fail closed).
+The price is that a PDP policy change is seen up to the TTL later; keep the TTL in seconds.
 """
 import logging
 import threading
-from typing import List, NamedTuple, Optional
+import time
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from cerbos.sdk.client import CerbosClient
 from cerbos.sdk.model import Principal, Resource
@@ -35,11 +42,38 @@ class EdgeDecision(NamedTuple):
 class CerbosEdgeEngine:
     """Thin client over the central Cerbos PDP."""
 
-    def __init__(self, base_url: str, timeout_s: float = 2.0) -> None:
+    def __init__(self, base_url: str, timeout_s: float = 2.0,
+                 decision_cache_ttl_s: float = 0.0, decision_cache_max: int = 2048) -> None:
         self._base_url = base_url
         self._timeout = timeout_s
         self._client = None
         self._lock = threading.Lock()
+        self._cache_ttl = max(0.0, decision_cache_ttl_s)
+        self._cache_max = max(1, decision_cache_max)
+        # key -> (expires_at monotonic, "allow" | "deny"); replaced under the lock, read without a hit cost
+        self._cache: Dict[Tuple, Tuple[float, str]] = {}
+        self._cache_lock = threading.Lock()
+
+    def clear_cache(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
+
+    def _cache_get(self, key: Tuple) -> Optional[str]:
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        if entry[0] <= time.monotonic():
+            return None
+        return entry[1]
+
+    def _cache_put(self, key: Tuple, outcome: str) -> None:
+        now = time.monotonic()
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_max:
+                self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+                if len(self._cache) >= self._cache_max:
+                    self._cache.clear()
+            self._cache[key] = (now + self._cache_ttl, outcome)
 
     def _get_client(self):
         client = self._client
@@ -72,6 +106,12 @@ class CerbosEdgeEngine:
         attr = {"scopes": list(scopes)}
         if tenant:
             attr["tenant"] = tenant
+        key = None
+        if self._cache_ttl > 0:
+            key = (subject, tuple(scopes), tenant or "", resource_kind, action, resource_id)
+            cached = self._cache_get(key)
+            if cached is not None:
+                return EdgeDecision(cached, [], None)
         try:
             allowed = self._get_client().is_allowed(
                 action,
@@ -79,7 +119,10 @@ class CerbosEdgeEngine:
                 Resource(id=resource_id, kind=resource_kind),
                 request_id=request_id,
             )
-            return EdgeDecision("allow" if allowed else "deny", [], None)
+            outcome = "allow" if allowed else "deny"
+            if key is not None:
+                self._cache_put(key, outcome)
+            return EdgeDecision(outcome, [], None)
         except Exception as e:  # noqa: BLE001 — anything from client/transport ⇒ fail closed
             logger.error("Cerbos edge check failed for %s/%s: %s", resource_kind, action, e)
             return EdgeDecision("error", [], str(e))
