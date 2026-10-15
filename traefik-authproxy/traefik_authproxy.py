@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from contextlib import asynccontextmanager
 
 import requests
@@ -109,6 +109,32 @@ class _QuietPathsFilter(logging.Filter):
 
 for _name in ("uvicorn.access", "uvicorn"):
     logging.getLogger(_name).addFilter(_QuietPathsFilter())
+
+
+class _RoutineAuthFilter(logging.Filter):
+    """Drop the access-log line of a successful /auth call.
+
+    The decision line (`authz outcome=... requestId=...`) already says it, with more; at hundreds of
+    requests a second the second line per request was a measurable share of this pod's CPU and of the
+    log shipper's. A denial or an error (401, 403, 5xx) keeps its access line: for a bad token it is the
+    only record. AUTH_ACCESS_LOG_OK=true brings every line back.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5:    # uvicorn: client, method, path, http version, status
+            path, status = str(args[2]).split("?", 1)[0], args[4]
+            if path == "/auth" and isinstance(status, int) and 200 <= status < 300:
+                return False
+        return True
+
+
+if os.getenv("AUTH_ACCESS_LOG_OK", "false").lower() not in ("1", "true", "yes"):
+    logging.getLogger("uvicorn.access").addFilter(_RoutineAuthFilter())
+
+# httpx (the PDP client) logs one INFO line per call: the POST to the PDP and its status.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 # --- Trusted header contract ---
 # Every 2xx from /auth carries the full set (empty / "-" when not applicable),
@@ -395,6 +421,7 @@ def _refresh_jwks() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to retrieve JWKS")
     JWKS_CACHE = jwks
     JWKS_CACHE_TIME = time.monotonic()
+    _TOKEN_CACHE.clear()   # verified against the previous key set
     app_logger.info("get_jwks::JWKS cache refreshed successfully")
     return JWKS_CACHE
 
@@ -439,7 +466,42 @@ def _signing_key(kid: str) -> Any:
     return key
 
 
+# A verified token is reused for up to TOKEN_CACHE_TTL seconds (0 = off, the default), and never past its
+# own `exp`: the same machine client sends the same token for minutes, and checking an RS256 signature
+# plus the claims again for each request was ~45% of the CPU left after the PDP answers were cached.
+# The result is exactly what verifying again would give, except that a signing key withdrawn by the
+# provider is honoured for up to this long; the cache is emptied whenever the key set is refreshed.
+TOKEN_CACHE_TTL = float(os.getenv("TOKEN_CACHE_TTL", "0"))
+TOKEN_CACHE_MAX = int(os.getenv("TOKEN_CACHE_MAX", "2048"))
+_TOKEN_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _cache_verified_token(token: str, payload: Dict[str, Any]) -> None:
+    remaining = float(payload.get("exp", 0)) - time.time()
+    lifetime = min(TOKEN_CACHE_TTL, remaining)
+    if lifetime <= 0:
+        return
+    now = time.monotonic()
+    if len(_TOKEN_CACHE) >= TOKEN_CACHE_MAX:
+        for key in [k for k, (until, _) in _TOKEN_CACHE.items() if until <= now]:
+            _TOKEN_CACHE.pop(key, None)
+        if len(_TOKEN_CACHE) >= TOKEN_CACHE_MAX:
+            _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[token] = (now + lifetime, payload)
+
+
 def verify_token(token: str) -> Dict[str, Any]:
+    if TOKEN_CACHE_TTL > 0:
+        hit = _TOKEN_CACHE.get(token)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+    payload = _verify_token(token)
+    if TOKEN_CACHE_TTL > 0:
+        _cache_verified_token(token, payload)
+    return payload
+
+
+def _verify_token(token: str) -> Dict[str, Any]:
     try:
         kid = jwt.get_unverified_header(token).get("kid")
         if not kid:
@@ -495,20 +557,40 @@ def extract_token_scopes(payload: Dict[str, Any]) -> List[str]:
     return list(scopes)
 
 # --- Correlation ID Middleware ---
-@app.middleware("http")
-async def correlation_id_middleware(request: Request, call_next):
+class CorrelationIdMiddleware:
     """Propagate X-Correlation-ID across requests.
 
-    If the incoming request contains an X-Correlation-ID header, it is reused.
-    Otherwise, a new UUID is generated. The ID is echoed in the response headers.
-    Consistent with the ecosystem convention used across checkout, auditflow, and
-    payment-gateway modules.
+    If the incoming request contains an X-Correlation-ID header, it is reused. Otherwise a new UUID is
+    generated. The ID is echoed in the response headers. Consistent with the ecosystem convention used
+    across checkout, auditflow, and payment-gateway modules.
+
+    A plain ASGI middleware, on purpose: ``@app.middleware("http")`` (BaseHTTPMiddleware) starts a task
+    and wraps the body stream for every request, which was ~30% of this service's CPU per /auth call.
     """
-    correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
-    request.state.correlation_id = correlation_id
-    response = await call_next(request)
-    response.headers["X-Correlation-ID"] = correlation_id
-    return response
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        correlation_id = None
+        for name, value in scope["headers"]:
+            if name == b"x-correlation-id":
+                correlation_id = value.decode("latin-1")
+                break
+        correlation_id = correlation_id or str(uuid.uuid4())
+        scope.setdefault("state", {})["correlation_id"] = correlation_id
+
+        async def send_with_id(message):
+            if message["type"] == "http.response.start":
+                message.setdefault("headers", []).append((b"x-correlation-id", correlation_id.encode("latin-1")))
+            await send(message)
+
+        await self.app(scope, receive, send_with_id)
+
+
+app.add_middleware(CorrelationIdMiddleware)
 
 # --- Health Check Endpoints ---
 def _ready() -> bool:
@@ -654,7 +736,6 @@ def authenticate(request: Request):
     if decision.decision != "allow":
         raise HTTPException(status_code=403, detail="Access denied by policy")
 
-    app_logger.info("Access granted for %s %s", forwarded_method, path)
     app_logger.debug("Access granted to user %s for %s %s", user_id, forwarded_method, path)
 
     response = JSONResponse(content=AuthResponse(
