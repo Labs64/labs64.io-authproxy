@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG GIT_REVISION=unknown
 # Release version (the git tag) for a published image, "edge" for master builds, "dev" locally.
