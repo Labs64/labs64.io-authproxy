@@ -11,7 +11,7 @@
 
 <p align="center"><img src="docs/assets/api-gateway-hero.svg" alt="API Gateway: Browser apps, backend services, CI jobs and AI agents enter one building through a single door; the lobby verifies the token, matches the route and asks Cerbos before anyone reaches AuditFlow, Payment Gateway, Checkout or Customer Portal." width="880"></p>
 
-[**Get started**](https://labs64.io/docs/modules/auth-gateway/#quick-start) · [Features](#features) · [Architecture](https://labs64.io/docs/modules/auth-gateway/#architecture) · [AI agents](#using-api-gateway-with-ai-agents) · [Ecosystem](#the-labs64io-ecosystem) · [Documentation](https://labs64.io/docs/modules/auth-gateway/) · [labs64.io](https://labs64.io)
+[**Get started**](https://labs64.io/docs/modules/auth-gateway/#quick-start) · [Features](#features) · [Architecture](https://labs64.io/docs/modules/auth-gateway/#architecture) · [AI agents](#using-it-with-ai-agents) · [Ecosystem](#the-labs64io-ecosystem) · [Documentation](https://labs64.io/docs/modules/auth-gateway/) · [labs64.io](https://labs64.io)
 
 > [!NOTE]
 > The gateway **fails closed**: a route with no policy is denied, and a request is never forwarded without a verified identity. The Labs64.IO modules trust the `X-Auth-*` headers it sets, so never expose a module without it in front.
@@ -63,14 +63,9 @@ The modules behind it trust those headers, which is exactly why they must never 
 - **Check that every route has a policy.** The gateway denies unknown routes, so a missing manifest shows up as `403`, not as an open door.
 - **Review scopes against your provider's claims.** `TOKEN_SCOPES_CLAIM_PATHS` must match where your provider puts scopes or roles.
 
-## Using API Gateway with AI agents
+## Using it with AI agents
 
-API Gateway is what makes it safe to let an agent call the platform: the agent gets a token with only the scopes it needs, and the gateway enforces them.
-
-- **Give an agent its own client.** Use a service principal (client credentials) with a minimal scope set; the gateway turns the token into `X-Auth-User: svc:<client>` and `X-Auth-Scopes` for the module.
-- **Predictable refusals.** `401` no or invalid token, `403` valid token without the required scope or no policy for the route; an agent can tell which and stop retrying.
-- **Discover the surface.** The aggregated Swagger UI lists every installed module's OpenAPI contract.
-- **Working on the code with an agent?** [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) describe the layout, environment variables and test commands.
+Give each agent its own client with a minimal scope set, and the gateway enforces it. The [guide for AI agents](https://labs64.io/docs/introduction/ai-agents.html) covers authentication, retries and errors across all modules. Working on this repository with an agent? [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) describe the layout, environment variables and test commands.
 
 ## The Labs64.IO Ecosystem
 
