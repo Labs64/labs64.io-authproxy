@@ -11,7 +11,7 @@
 
 <p align="center"><img src="docs/assets/api-gateway-hero.svg" alt="API Gateway: Browser apps, backend services, CI jobs and AI agents enter one building through a single door; the lobby verifies the token, matches the route and asks Cerbos before anyone reaches AuditFlow, Payment Gateway, Checkout or Customer Portal." width="880"></p>
 
-[Why API Gateway?](#why-api-gateway) · [Documentation](https://labs64.io/docs/modules/auth-gateway/) · [Build and test](#build-and-test) · [Ecosystem](#the-labs64io-ecosystem) · [labs64.io](https://labs64.io)
+[**Get started**](https://labs64.io/docs/modules/auth-gateway/#quick-start) · [Features](#features) · [Architecture](https://labs64.io/docs/modules/auth-gateway/#architecture) · [AI agents](#using-api-gateway-with-ai-agents) · [Ecosystem](#the-labs64io-ecosystem) · [Documentation](https://labs64.io/docs/modules/auth-gateway/) · [labs64.io](https://labs64.io)
 
 > [!NOTE]
 > The gateway **fails closed**: a route with no policy is denied, and a request is never forwarded without a verified identity. The Labs64.IO modules trust the `X-Auth-*` headers it sets, so never expose a module without it in front.
@@ -35,47 +35,69 @@ When every service checks tokens, scopes and tenants on its own, they drift apar
 - You run a single service with its own auth and no plan to add more.
 - You need a general-purpose ingress or CDN: this is the authentication and authorization layer that sits next to one.
 
-## Documentation
+## Features
 
-Install, configure and operate API Gateway in the **[API Gateway documentation](https://labs64.io/docs/modules/auth-gateway/)**.
+- **OIDC/JWT verification**: RS256 tokens checked against the provider's JWKS, with caching and key rotation handled.
+- **OpenAPI-derived policy**: per-operation routes and scopes come from each module's generated manifest, hot-reloaded without a restart.
+- **Central decision**: every module route is one `is_allowed` check against the Cerbos policy engine.
+- **Trusted headers**: `X-Auth-User`, `X-Auth-Scopes`, `X-Auth-Tenant` and `X-Request-ID` for the modules behind it.
+- **Fail closed**: unknown routes and unverifiable tokens are denied; not-ready is reported until routes load.
+- **Rate limiting and security headers**: per-user limits and standard headers applied at the edge.
+- **Aggregated API docs**: one Swagger UI for every installed module.
+- **Observable**: enforcement decisions are logged with a request id; sensitive detail sits behind a dedicated debug logger.
 
-[Quick Start](https://labs64.io/docs/modules/auth-gateway/#quick-start) · [Configuration](https://labs64.io/docs/modules/auth-gateway/#configuration) · [What a request goes through](https://labs64.io/docs/modules/auth-gateway/#what-a-request-goes-through) · [Before you go live](https://labs64.io/docs/modules/auth-gateway/#before-you-go-live)
+## What a request goes through
 
-New to Labs64.IO? The [Quickstart](https://labs64.io/docs/getting-started/quickstart.html) puts the platform on any Kubernetes cluster in about five minutes.
+1. **Traefik** receives the request and asks the gateway to decide (ForwardAuth, `GET /auth`).
+2. The gateway **verifies the token**: signature (RS256, keys from your provider's JWKS), issuer, audience and expiry.
+3. It **finds the route** in the manifests generated from each module's OpenAPI contract. No policy for the route means the request is denied.
+4. It asks **Cerbos** whether this caller may perform this action on this resource.
+5. If allowed, it returns the identity as headers (`X-Auth-User`, `X-Auth-Scopes`, `X-Auth-Tenant`, `X-Request-ID`) and Traefik forwards the request.
 
-## Build and test
+The modules behind it trust those headers, which is exactly why they must never be reachable around the gateway.
 
-```bash
-cd traefik-authproxy
-pip install -r requirements.txt pytest
-pytest tests/        # run the tests
-just docker          # build the image
-just run             # build and run with the local OIDC config
-```
+## Before you go live
 
-Needs Python 3.14 and Docker. Working on the code with an AI agent? [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) describe the layout, conventions and checks.
+- **Use your own identity provider.** The demo provider in the Quickstart issues a valid token to anyone who asks.
+- **Do not expose modules around the gateway.** Network policies should allow module traffic only from the gateway.
+- **Check that every route has a policy.** The gateway denies unknown routes, so a missing manifest shows up as `403`, not as an open door.
+- **Review scopes against your provider's claims.** `TOKEN_SCOPES_CLAIM_PATHS` must match where your provider puts scopes or roles.
+
+## Using API Gateway with AI agents
+
+API Gateway is what makes it safe to let an agent call the platform: the agent gets a token with only the scopes it needs, and the gateway enforces them.
+
+- **Give an agent its own client.** Use a service principal (client credentials) with a minimal scope set; the gateway turns the token into `X-Auth-User: svc:<client>` and `X-Auth-Scopes` for the module.
+- **Predictable refusals.** `401` no or invalid token, `403` valid token without the required scope or no policy for the route; an agent can tell which and stop retrying.
+- **Discover the surface.** The aggregated Swagger UI lists every installed module's OpenAPI contract.
+- **Working on the code with an agent?** [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) describe the layout, environment variables and test commands.
 
 ## The Labs64.IO Ecosystem
 
-This repository is part of the [Labs64.IO Ecosystem](https://labs64.io): open-source building blocks for secure commerce platforms. Every module is documented at [labs64.io/docs](https://labs64.io/docs/).
+API Gateway is one module of the [Labs64.IO Ecosystem](https://labs64.io); [every module is documented here](https://labs64.io/docs/).
 
-| Module | What it does |
-|---|---|
-| [**AuditFlow**](https://github.com/Labs64/labs64.io-auditflow) | Publish once, route anywhere, lose nothing |
-| [**Auth Gateway**](https://github.com/Labs64/labs64.io-authproxy) | One authenticated edge for every module |
-| [**Payment Gateway**](https://github.com/Labs64/labs64.io-payment-gateway) | One API across multiple payment providers |
-| [**Checkout**](https://github.com/Labs64/labs64.io-checkout) | Whitelabel checkout and order workflow |
-| [**Customer Portal**](https://github.com/Labs64/labs64.io-customer-portal) | Self-service portal for your customers |
-
-Built on [Commons](https://github.com/Labs64/labs64.io-commons), deployed with [Helm Charts](https://github.com/Labs64/labs64.io-helm-charts), developed in the [Workspace](https://github.com/Labs64/labs64.io-workspace), verified by [Tests](https://github.com/Labs64/labs64.io-tests) and documented in [Docs](https://github.com/Labs64/labs64.io-docs). Also from Labs64: [NetLicensing](https://netlicensing.io) for licensing-as-a-service and [GuideChimp](https://www.labs64.com/guidechimp/) for guided product tours.
+| Module | What it does | Link |
+|---|---|---|
+| **AuditFlow** | Audit-event routing pipeline | [labs64.io-auditflow](https://github.com/Labs64/labs64.io-auditflow) |
+| **API Gateway** | Authenticating, policy-enforcing edge for all modules | [labs64.io-authproxy](https://github.com/Labs64/labs64.io-authproxy) |
+| **Payment Gateway** | One API over multiple payment providers | [labs64.io-payment-gateway](https://github.com/Labs64/labs64.io-payment-gateway) |
+| **Checkout** | Embeddable, brandable checkout | [labs64.io-checkout](https://github.com/Labs64/labs64.io-checkout) |
+| **Customer Portal** | Customer self-service UI | [labs64.io-customer-portal](https://github.com/Labs64/labs64.io-customer-portal) |
+| **Commons** | Shared Java and Python libraries | [labs64.io-commons](https://github.com/Labs64/labs64.io-commons) |
+| **Helm Charts** | Kubernetes deployment for every module | [labs64.io-helm-charts](https://github.com/Labs64/labs64.io-helm-charts) |
+| **Workspace** | Dev container and multi-repo tooling | [labs64.io-workspace](https://github.com/Labs64/labs64.io-workspace) |
+| **Tests** | Cross-module regression suite | [labs64.io-tests](https://github.com/Labs64/labs64.io-tests) |
+| **Docs** | Published documentation | [labs64.io-docs](https://github.com/Labs64/labs64.io-docs) |
+| **NetLicensing** | Licensing-as-a-Service: license and entitlement management | [netlicensing.io](https://netlicensing.io) |
+| **GuideChimp** | Interactive guided product tours | [labs64.com/guidechimp](https://www.labs64.com/guidechimp/) |
 
 ## Contributing
 
-We would love your help. Anything that touches authorization behaviour needs a test that proves the denied case, not just the allowed one. Fork the repository, make your change on a branch, run the checks described in [`AGENTS.md`](AGENTS.md) and open a pull request. Not sure whether an idea fits? Open an issue first.
+We would love your help. Anything that touches authorization behaviour needs a test that proves the denied case, not just the allowed one. Fork the repository, make your change on a branch, run the checks described in [`AGENTS.md`](AGENTS.md) and open a pull request. Not sure whether an idea fits? Open an issue first and we will talk it through; that is a perfectly good way to start.
 
 ## License
 
-Open source under the [Apache License 2.0](LICENSE): use it, change it and ship it commercially.
+Everything in this repository is open source under the [Apache License 2.0](LICENSE): you can use it, change it and ship it commercially. The core of the *Labs64.IO Ecosystem* is free forever; community modules are Apache-2.0 licensed.
 
 ---
 
