@@ -4,7 +4,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 ## Ecosystem role
 
-- Deployed as `traefik-authproxy` Helm chart in `labs64io` namespace.
+- Deployed by the `api-gateway` Helm chart (`labs64.io-helm-charts`, which also carries the shared Traefik middlewares) in the `labs64io` namespace.
 - Traefik forwards every request to `/auth` before routing to upstream services.
 - On success, emits the full trusted header contract that upstream services trust: `X-Auth-User`, `X-Auth-Scopes`, `X-Auth-Tenant` (`-` when tenant-less), `X-Request-ID` (echoed when well-formed, otherwise generated as UUIDv7). All four are set on **every** 2xx (empty when not applicable) so Traefik's `authResponseHeaders` always overwrite client-supplied values. Values are sanitized to `^[a-zA-Z0-9_.:-]+$` (CR/LF stripped) — keep identical to the `auth-context` libraries in `labs64.io-commons`.
 
@@ -12,13 +12,15 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 | Path | Service | Stack | Port |
 |------|---------|-------|------|
-| `traefik-authproxy/` | Auth proxy | Python 3.14, FastAPI | 8081 |
+| `traefik-authproxy/` | Auth proxy | Python, FastAPI | 8081 |
 
 ## Critical guardrails
 
 1. **Never hardcode credentials** — env vars or K8s Secrets only.
 2. **Preserve `l64user`** (uid/gid 1064) in Dockerfiles.
 3. **Auth-policy scopes must be consistent with OIDC provider claims** (`TOKEN_SCOPES_CLAIM_PATHS`).
+4. **Fail closed.** An invalid token, no matching route, an unknown operation or an unreachable Cerbos PDP never end in an allow. Every new code path answers deny when in doubt, and has a test that proves it.
+5. **The header contract and the value sanitization are owned here and mirrored in `labs64.io-commons`** (`test-vectors/auth-context-vectors.json`, the Java and Python auth-context libraries). Changing a header, its semantics or the pattern is an RFC and a commons change in the same release train; the two sides must never disagree.
 
 ## Auth proxy details
 
@@ -90,3 +92,9 @@ Tests: `pytest` in `tests/`. Local docs: `:8081/docs`.
 | Policy matching (route/static/conflict) | `policy_store.py` → `PolicyStore.match()` |
 | Routes manifest + static-route loading | `routes_loader.py` → `load_routes_dir` / `load_static_routes` |
 | Static prefix policy format | `static_routes.yaml` |
+
+## Working rules for every change
+
+- Judge the change against the **Quality bar for every change** in `labs64.io-workspace/AGENTS.md` (stability of the ecosystem, no regression, no network surprises, performance, HA and resilience, testability, maintainability), and say in the pull request how each applies, or why it does not.
+- Every pull request is assigned to its author and added to the `Labs64.IO` GitHub Project (`labs64.io-workspace/AGENTS.md`, "Pull requests").
+- Before you push: in a virtualenv, `cd traefik-authproxy && pip install -r requirements.txt pytest httpx` (once; the tests use FastAPI's `TestClient`), then `python -m pytest tests`.
