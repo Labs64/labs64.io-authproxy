@@ -59,7 +59,7 @@ The middleware is configured using environment variables.
 
 - Once deployed, Traefik will intercept any request to *whoami.example.com* and forward it to the auth-middleware for authentication.
 - For a request to be successful, it must include a valid JWT in the Authorization header with the format `Bearer <token>`. The scopes contained in the JWT must match the scopes required for the requested operation, as resolved from the applicable auth policy.
-- Auth policies are no longer evaluated in-process. The authproxy acts strictly as an edge Policy Enforcement Point (PEP) and delegates authorization decisions to the central Cerbos PDP via the `CERBOS_URL`. 
+- Auth policies are no longer evaluated in-process. The Auth Gateway acts strictly as an edge Policy Enforcement Point (PEP) and delegates authorization decisions to the central Cerbos PDP via the `CERBOS_URL`. 
 - Route metadata is provided by two sources. Module routes are defined in manifests inside `ROUTES_DIR` (generated from each module's OpenAPI spec). Static prefix policies (`STATIC_ROUTES_FILE`) cover non-OpenAPI surfaces (e.g., UI bundles) and are only consulted when no module route matches. A request with no matching route fails closed with `403`.
 
 ### For example:

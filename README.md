@@ -1,4 +1,4 @@
-# Labs64.IO :: API Gateway
+# Labs64.IO :: Auth Gateway
 
 **One authenticated front door for every module.**
 *Part of the [Labs64.IO Ecosystem](https://labs64.io): the edge that verifies who is calling and what they may do, before any module sees the request.*
@@ -9,16 +9,16 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![📖 Documentation](https://img.shields.io/badge/📖-Documentation-AB6543.svg)](https://labs64.io/docs/modules/auth-gateway/)
 
-<p align="center"><img src="docs/assets/api-gateway-hero.svg" alt="API Gateway: Browser apps, backend services, CI jobs and AI agents enter one building through a single door; the lobby verifies the token, matches the route and asks Cerbos before anyone reaches AuditFlow, Payment Gateway, Checkout or Customer Portal." width="880"></p>
+<p align="center"><img src="docs/assets/api-gateway-hero.svg" alt="Auth Gateway: Browser apps, backend services, CI jobs and AI agents enter one building through a single door; the lobby verifies the token, matches the route and asks Cerbos before anyone reaches AuditFlow, Payment Gateway, Checkout or Customer Portal." width="880"></p>
 
 [**Get started**](https://labs64.io/docs/modules/auth-gateway/#quick-start) · [Features](#features) · [Architecture](https://labs64.io/docs/modules/auth-gateway/#architecture) · [AI agents](#using-it-with-ai-agents) · [Ecosystem](#the-labs64io-ecosystem) · [Documentation](https://labs64.io/docs/modules/auth-gateway/) · [labs64.io](https://labs64.io)
 
 > [!NOTE]
 > The gateway **fails closed**: a route with no policy is denied, and a request is never forwarded without a verified identity. The Labs64.IO modules trust the `X-Auth-*` headers it sets, so never expose a module without it in front.
 
-## Why API Gateway?
+## Why Auth Gateway?
 
-When every service checks tokens, scopes and tenants on its own, they drift apart, and one forgotten check is a data leak. The API Gateway moves that decision to the edge so it is made once, the same way, for every module.
+When every service checks tokens, scopes and tenants on its own, they drift apart, and one forgotten check is a data leak. The Auth Gateway moves that decision to the edge so it is made once, the same way, for every module.
 
 1. **One place to authenticate.** OIDC/JWT (RS256) tokens are verified against your identity provider's keys, for users and for service-to-service callers.
 2. **Authorization from the contract.** Routes and scopes are derived from each module's OpenAPI spec; the central Cerbos policy engine makes the decision.

@@ -1,4 +1,4 @@
-# AGENTS.md — Labs64.IO :: API Gateway
+# AGENTS.md — Labs64.IO :: Auth Gateway
 
 Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-based RBAC. All inbound requests pass through this proxy.
 
@@ -12,7 +12,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 | Path | Service | Stack | Port |
 |------|---------|-------|------|
-| `traefik-authproxy/` | Auth proxy | Python, FastAPI | 8081 |
+| `traefik-authproxy/` | Auth Gateway | Python, FastAPI | 8081 |
 
 ## Critical guardrails
 
@@ -22,7 +22,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 4. **Fail closed.** An invalid token, no matching route, an unknown operation or an unreachable Cerbos PDP never end in an allow. Every new code path answers deny when in doubt, and has a test that proves it.
 5. **The header contract and the value sanitization are owned here and mirrored in `labs64.io-commons`** (`test-vectors/auth-context-vectors.json`, the Java and Python auth-context libraries). Changing a header, its semantics or the pattern is an RFC and a commons change in the same release train; the two sides must never disagree.
 
-## Auth proxy details
+## Auth Gateway details
 
 - **App layout** (no longer single-file): `traefik_authproxy.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory routing table, OpenAPI-template matching) + `routes_loader.py` (loads the ConfigMap-mounted routes manifests + static-route policies) + `authz_edge.py` (Cerbos PDP HTTP client — the authorization decision).
 - **JWT verification**: `PyJWT` (with the `crypto` extra) with RS256 only. JWKS come from discovery; JWT `iss` must match explicit `OIDC_ISSUER` when configured, otherwise the discovered issuer. The explicit issuer is intentionally independent from the internal discovery transport URL.
