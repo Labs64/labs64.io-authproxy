@@ -19,7 +19,7 @@
 <ellipse cx="180" cy="40" rx="420" ry="300" fill="url(#hg1)"/><ellipse cx="1040" cy="560" rx="360" ry="260" fill="url(#hg2)"/>
 <rect width="1200" height="44" fill="#22100A"/><line x1="0" y1="44" x2="1200" y2="44" stroke="#F8EDE5" stroke-opacity=".1"/>
 <circle cx="28" cy="22" r="6" fill="#E14817"/><circle cx="50" cy="22" r="6" fill="#F2951C"/><circle cx="72" cy="22" r="6" fill="#87888A"/>
-<text x="600" y="27" class="mono" font-size="13" fill="#87888A" text-anchor="middle" letter-spacing="0.5">labs64.io-authproxy · GET /auth</text>
+<text x="600" y="27" class="mono" font-size="13" fill="#87888A" text-anchor="middle" letter-spacing="0.5">labs64.io-authgateway · GET /auth</text>
 <text x="64" y="100" class="sans" font-size="13" font-weight="500" fill="#F08B53" letter-spacing="3.6">LABS64.IO  ·  API GATEWAY</text>
 <text x="64" y="156" class="sans" font-size="48" font-weight="700" fill="#F8EDE5" letter-spacing="-1.4">One front door. Every module.</text>
 <text x="64" y="212" class="sans" font-size="48" font-weight="700" fill="#E14817" letter-spacing="-1.4">Verified before it is forwarded.</text>

@@ -3,7 +3,7 @@
 **One authenticated front door for every module.**
 *Part of the [Labs64.IO Ecosystem](https://labs64.io): the edge that verifies who is calling and what they may do, before any module sees the request.*
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Labs64/labs64.io-authproxy/labs64io-ci.yml?label=CI&logo=github)](https://github.com/Labs64/labs64.io-authproxy/actions/workflows/labs64io-ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/Labs64/labs64.io-authgateway/labs64io-ci.yml?label=CI&logo=github)](https://github.com/Labs64/labs64.io-authgateway/actions/workflows/labs64io-ci.yml)
 [![Docker Image Version](https://img.shields.io/docker/v/labs64/traefik-authproxy?label=Docker&logo=docker&logoColor=white&color=1C90ED)](https://hub.docker.com/r/labs64/traefik-authproxy)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/labs64io-helm-charts)](https://artifacthub.io/packages/helm/labs64io-helm-charts/api-gateway)
 [![📖 Documentation](https://img.shields.io/badge/📖-Documentation-AB6543.svg)](https://labs64.io/docs/modules/auth-gateway/)
