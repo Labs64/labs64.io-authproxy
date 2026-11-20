@@ -18,11 +18,11 @@ jobs:
   build:
     uses: Labs64/labs64.io-workspace/.github/workflows/python-ci.yml@v1
     with:
-      working-directory: traefik-authproxy
+      working-directory: traefik
       install-command: pip install -r requirements.txt pytest
       test-command: pytest -v
-      docker-context: traefik-authproxy
-      cache-dependency-path: traefik-authproxy/requirements.txt
+      docker-context: traefik
+      cache-dependency-path: traefik/requirements.txt
 
   edge-image:
     needs: build
@@ -30,6 +30,6 @@ jobs:
     uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@v1
     with:
       image: labs64/traefik-authproxy
-      context: ./traefik-authproxy
+      context: ./traefik
       mode: edge
     secrets: inherit

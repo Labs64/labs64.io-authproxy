@@ -12,7 +12,7 @@ jobs:
     uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@v1
     with:
       image: labs64/traefik-authproxy
-      context: ./traefik-authproxy
+      context: ./traefik
       mode: release
       version: ${{ github.event.release.tag_name }}
     secrets: inherit

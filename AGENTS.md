@@ -12,7 +12,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 | Path | Service | Stack | Port |
 |------|---------|-------|------|
-| `traefik-authproxy/` | Auth Gateway | Python, FastAPI | 8081 |
+| `traefik/` | Auth Gateway | Python, FastAPI | 8081 |
 
 ## Critical guardrails
 
@@ -74,7 +74,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 ## Build, run, test
 
 ```bash
-cd traefik-authproxy
+cd traefik
 just docker         # build + push to localhost:5005
 just run            # build + run with local OIDC config
 just docu           # open ReDoc + Swagger docs
@@ -97,4 +97,4 @@ Tests: `pytest` in `tests/`. Local docs: `:8081/docs`.
 
 - Judge the change against the **Quality bar for every change** in `labs64.io-workspace/AGENTS.md` (stability of the ecosystem, no regression, no network surprises, performance, HA and resilience, testability, maintainability), and say in the pull request how each applies, or why it does not.
 - Every pull request is assigned to its author and added to the `Labs64.IO` GitHub Project (`labs64.io-workspace/AGENTS.md`, "Pull requests").
-- Before you push: in a virtualenv, `cd traefik-authproxy && pip install -r requirements.txt pytest httpx` (once; the tests use FastAPI's `TestClient`), then `python -m pytest tests`.
+- Before you push: in a virtualenv, `cd traefik && pip install -r requirements.txt pytest httpx` (once; the tests use FastAPI's `TestClient`), then `python -m pytest tests`.
