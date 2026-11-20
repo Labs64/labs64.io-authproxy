@@ -4,7 +4,7 @@ ARG GIT_REVISION=unknown
 # Release version (the git tag) for a published image, "edge" for master builds, "dev" locally.
 ARG VERSION=dev
 
-LABEL org.opencontainers.image.title="Labs64.IO :: API Gateway" \
+LABEL org.opencontainers.image.title="Labs64.IO :: Auth Gateway" \
       org.opencontainers.image.description="Traefik ForwardAuth proxy for the Labs64.IO Ecosystem" \
       org.opencontainers.image.url="https://labs64.io" \
       org.opencontainers.image.source="https://github.com/Labs64/labs64.io-authgateway" \

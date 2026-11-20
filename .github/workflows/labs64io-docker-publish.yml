@@ -18,13 +18,13 @@ jobs:
     secrets: inherit
 
   # Opens a PR in labs64.io-helm-charts pinning the digest. The chart is named
-  # api-gateway, not authproxy — it merged traefik-authproxy with gateway-common.
+  # authgateway, not authproxy — it merged traefik-authproxy with gateway-common.
   propagate-to-chart:
-    name: Pin digest in charts/api-gateway
+    name: Pin digest in charts/authgateway
     needs: publish
     uses: Labs64/labs64.io-workspace/.github/workflows/chart-update-dispatch.yml@v1
     with:
-      chart: api-gateway
+      chart: authgateway
       version: ${{ github.event.release.tag_name }}
       images: ${{ needs.publish.outputs.image-ref }}
     secrets:
