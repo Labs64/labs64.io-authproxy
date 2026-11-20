@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-import traefik_authproxy
-from traefik_authproxy import app
+import authgateway
+from authgateway import app
 from policy_store import RoutePolicy, StaticPolicy, compile_template
 from authz_edge import EdgeDecision
 
@@ -57,15 +57,15 @@ def _stub_decide(*, resource_kind, action, resource_id, user_id, scopes, tenant,
 
 @pytest.fixture(autouse=True)
 def setup_routes(monkeypatch):
-    traefik_authproxy.STORE.set_module("test", TEST_ROUTES)
-    monkeypatch.setattr(traefik_authproxy.AUTHZ_ENGINE, "decide", _stub_decide)
+    authgateway.STORE.set_module("test", TEST_ROUTES)
+    monkeypatch.setattr(authgateway.AUTHZ_ENGINE, "decide", _stub_decide)
     yield
-    traefik_authproxy.STORE.set_module("test", TEST_ROUTES)
+    authgateway.STORE.set_module("test", TEST_ROUTES)
 
 
 @pytest.fixture
 def store():
-    s = traefik_authproxy.STORE
+    s = authgateway.STORE
     s.set_static([StaticPolicy(prefix="/checkout-ui", public=False,
                                scopes=("admin-role",), static_id="checkout-ui")])
     return s
@@ -77,7 +77,7 @@ def client(store):
 
 
 def _token(monkeypatch, payload):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: payload)
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: payload)
 
 
 # --- /auth decision matrix ---
@@ -154,17 +154,17 @@ def test_static_ui_prefix_with_matching_role_scope_is_200(client, monkeypatch):
 # --- /health/ready ---
 
 def test_health_ready_503_when_no_modules(client):
-    for module in traefik_authproxy.STORE.modules():
-        traefik_authproxy.STORE.drop_module(module)
+    for module in authgateway.STORE.modules():
+        authgateway.STORE.drop_module(module)
     try:
         response = client.get("/health/ready")
         assert response.status_code == 503
     finally:
-        traefik_authproxy.STORE.set_module("test", TEST_ROUTES)
+        authgateway.STORE.set_module("test", TEST_ROUTES)
 
 
 def test_health_ready_200_after_routes_loaded(client):
-    traefik_authproxy.STORE.set_module("test", TEST_ROUTES)
+    authgateway.STORE.set_module("test", TEST_ROUTES)
     response = client.get("/health/ready")
     assert response.status_code == 200
 
@@ -180,9 +180,9 @@ def test_health_answers_while_auth_requests_block(store, monkeypatch):
         release.wait(5)
         return EdgeDecision("allow", [], None)
 
-    monkeypatch.setattr(traefik_authproxy.AUTHZ_ENGINE, "decide", slow_decide)
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {})
-    monkeypatch.setattr(traefik_authproxy, "_load_routes", lambda: None)
+    monkeypatch.setattr(authgateway.AUTHZ_ENGINE, "decide", slow_decide)
+    monkeypatch.setattr(authgateway, "get_jwks", lambda: {})
+    monkeypatch.setattr(authgateway, "_load_routes", lambda: None)
     # One TestClient context = one event loop shared by every request, as under uvicorn.
     with TestClient(app) as shared:
         blocked = [threading.Thread(target=shared.get, args=("/auth",),

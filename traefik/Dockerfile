@@ -5,7 +5,7 @@ ARG GIT_REVISION=unknown
 ARG VERSION=dev
 
 LABEL org.opencontainers.image.title="Labs64.IO :: Auth Gateway" \
-      org.opencontainers.image.description="Traefik ForwardAuth proxy for the Labs64.IO Ecosystem" \
+      org.opencontainers.image.description="Auth Gateway (Traefik ForwardAuth) for the Labs64.IO Ecosystem" \
       org.opencontainers.image.url="https://labs64.io" \
       org.opencontainers.image.source="https://github.com/Labs64/labs64.io-authgateway" \
       org.opencontainers.image.licenses="Apache-2.0" \
@@ -34,7 +34,7 @@ COPY --chown=${USER_NAME}:${GROUP_NAME} requirements.txt .
 # + static-route policies, authz_edge.py is the Cerbos PDP HTTP client). A
 # default static_routes.yaml ships as a fallback; the chart mounts ConfigMaps
 # over routes/ and static_routes.yaml.
-COPY --chown=${USER_NAME}:${GROUP_NAME} traefik_authproxy.py policy_store.py routes_loader.py authz_edge.py static_routes.yaml ./
+COPY --chown=${USER_NAME}:${GROUP_NAME} authgateway.py policy_store.py routes_loader.py authz_edge.py static_routes.yaml ./
 
 # Install any needed packages specified in requirements.txt
 RUN python -m pip install --upgrade pip && \
@@ -62,4 +62,4 @@ ENTRYPOINT ["./entrypoint.sh"]
 
 # Run the FastAPI application using Uvicorn. No "Server: uvicorn" header: Traefik hands a denied
 # request's 401/403 to the caller with this service's headers, and they should not name the server.
-CMD ["uvicorn", "traefik_authproxy:app", "--host", "0.0.0.0", "--port", "8081", "--no-server-header"]
+CMD ["uvicorn", "authgateway:app", "--host", "0.0.0.0", "--port", "8081", "--no-server-header"]

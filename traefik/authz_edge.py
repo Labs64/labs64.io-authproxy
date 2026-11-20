@@ -27,7 +27,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 from cerbos.sdk.client import CerbosClient
 from cerbos.sdk.model import Principal, Resource
 
-logger = logging.getLogger("traefik_authproxy.authz_edge")
+logger = logging.getLogger("authgateway.authz_edge")
 
 ANONYMOUS_USER = "anonymous"
 SERVICE_PREFIX = "svc:"

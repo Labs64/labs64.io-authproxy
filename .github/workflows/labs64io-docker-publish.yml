@@ -11,14 +11,14 @@ jobs:
   publish:
     uses: Labs64/labs64.io-workspace/.github/workflows/docker-publish.yml@v1
     with:
-      image: labs64/traefik-authproxy
+      image: labs64/authgateway-traefik
       context: ./traefik
       mode: release
       version: ${{ github.event.release.tag_name }}
     secrets: inherit
 
   # Opens a PR in labs64.io-helm-charts pinning the digest. The chart is named
-  # authgateway, not authproxy — it merged traefik-authproxy with gateway-common.
+  # authgateway and also carries the shared Traefik middlewares.
   propagate-to-chart:
     name: Pin digest in charts/authgateway
     needs: publish

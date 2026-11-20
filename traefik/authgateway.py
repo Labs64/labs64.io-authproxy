@@ -88,13 +88,13 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - [%(name)s] %(message)s"
 # --- Logging ---
 numeric_level = getattr(logging, LOG_LEVEL, logging.INFO)
 logging.basicConfig(level=numeric_level, format=LOG_FORMAT)
-app_logger = logging.getLogger("traefik_authproxy")
+app_logger = logging.getLogger("authgateway")
 app_logger.setLevel(numeric_level)
 
 # Sensitive enforcement detail (user/tenant/scopes/resource) rides a dedicated
 # child logger so the Cerbos testing phase can enable it WITHOUT turning the whole
 # app to DEBUG. Off unless this logger is explicitly raised to DEBUG.
-authz_detail_logger = logging.getLogger("traefik_authproxy.authz.detail")
+authz_detail_logger = logging.getLogger("authgateway.authz.detail")
 
 # Silence noisy Uvicorn access-log lines for internal probe endpoints (/docs,
 # /openapi.json, /health*). Readiness probes hit /health/ready repeatedly and

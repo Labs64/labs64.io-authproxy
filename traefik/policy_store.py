@@ -1,4 +1,4 @@
-"""In-memory edge auth-policy table for the traefik-authproxy.
+"""In-memory edge auth-policy table for the authgateway-traefik.
 
 Routes come from each module's generated routes manifest (version/module/
 basePath/routes, emitted by the commons OpenApiAuthPreprocessor and shipped as a
@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
-logger = logging.getLogger("traefik_authproxy.policy_store")
+logger = logging.getLogger("authgateway.policy_store")
 
 
 _TEMPLATE_PARAM_RE = re.compile(r"\{[^/{}]+\}")

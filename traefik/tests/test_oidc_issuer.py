@@ -1,23 +1,23 @@
 import pytest
 from fastapi import HTTPException
 import jwt_helpers
-import traefik_authproxy
+import authgateway
 
 
 @pytest.fixture(autouse=True)
 def clear_oidc_caches():
-    traefik_authproxy.DISCOVERY_CACHE.clear()
-    traefik_authproxy.JWKS_CACHE.clear()
+    authgateway.DISCOVERY_CACHE.clear()
+    authgateway.JWKS_CACHE.clear()
     yield
-    traefik_authproxy.DISCOVERY_CACHE.clear()
-    traefik_authproxy.JWKS_CACHE.clear()
+    authgateway.DISCOVERY_CACHE.clear()
+    authgateway.JWKS_CACHE.clear()
 
 
 def test_discovery_metadata_requires_issuer(monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "OIDC_ISSUER", "")
+    monkeypatch.setattr(authgateway, "OIDC_ISSUER", "")
 
     with pytest.raises(ValueError, match="missing 'issuer'"):
-        traefik_authproxy._cache_discovery_metadata(
+        authgateway._cache_discovery_metadata(
             {"jwks_uri": "http://keycloak.tools/realms/labs64io/protocol/openid-connect/certs"}
         )
 
@@ -27,30 +27,30 @@ def test_explicit_issuer_overrides_discovery_transport_issuer(monkeypatch, caplo
     discovered_issuer = (
         "http://keycloak.tools.svc.cluster.local:8080/realms/labs64io"
     )
-    monkeypatch.setattr(traefik_authproxy, "OIDC_ISSUER", expected_issuer)
+    monkeypatch.setattr(authgateway, "OIDC_ISSUER", expected_issuer)
 
-    traefik_authproxy._cache_discovery_metadata(
+    authgateway._cache_discovery_metadata(
         {
             "issuer": discovered_issuer,
             "jwks_uri": "http://keycloak.tools/realms/labs64io/protocol/openid-connect/certs",
         }
     )
 
-    assert traefik_authproxy.get_expected_issuer() == expected_issuer
-    assert traefik_authproxy.DISCOVERY_CACHE["issuer"] == discovered_issuer
+    assert authgateway.get_expected_issuer() == expected_issuer
+    assert authgateway.DISCOVERY_CACHE["issuer"] == discovered_issuer
     assert "differs from explicit JWT issuer" in caplog.text
 
 
 def test_discovery_metadata_caches_validated_issuer(monkeypatch):
     issuer = "https://keycloak.localhost/realms/labs64io"
     jwks_uri = "http://keycloak.tools/realms/labs64io/protocol/openid-connect/certs"
-    monkeypatch.setattr(traefik_authproxy, "OIDC_ISSUER", issuer)
+    monkeypatch.setattr(authgateway, "OIDC_ISSUER", issuer)
 
-    traefik_authproxy._cache_discovery_metadata(
+    authgateway._cache_discovery_metadata(
         {"issuer": issuer, "jwks_uri": jwks_uri}
     )
 
-    assert traefik_authproxy.DISCOVERY_CACHE == {
+    assert authgateway.DISCOVERY_CACHE == {
         "issuer": issuer,
         "jwks_uri": jwks_uri,
     }
@@ -58,23 +58,23 @@ def test_discovery_metadata_caches_validated_issuer(monkeypatch):
 
 def test_discovered_issuer_is_used_when_not_explicitly_configured(monkeypatch):
     issuer = "http://mock-oidc.localhost/labs64io"
-    monkeypatch.setattr(traefik_authproxy, "OIDC_ISSUER", "")
+    monkeypatch.setattr(authgateway, "OIDC_ISSUER", "")
 
-    traefik_authproxy._cache_discovery_metadata(
+    authgateway._cache_discovery_metadata(
         {"issuer": issuer, "jwks_uri": "http://mock-oidc.tools/jwks"}
     )
 
-    assert traefik_authproxy.get_expected_issuer() == issuer
+    assert authgateway.get_expected_issuer() == issuer
 
 
 def test_verify_token_enforces_the_discovered_issuer_and_audience(monkeypatch):
     issuer = "https://keycloak.localhost/realms/labs64io"
     key = jwt_helpers.make_key("test-key")
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [key.jwk]})
-    monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: issuer)
+    monkeypatch.setattr(authgateway, "get_jwks", lambda: {"keys": [key.jwk]})
+    monkeypatch.setattr(authgateway, "get_expected_issuer", lambda: issuer)
 
-    payload = traefik_authproxy.verify_token(
-        key.sign({"sub": "service-client", "iss": issuer, "aud": traefik_authproxy.OIDC_AUDIENCE})
+    payload = authgateway.verify_token(
+        key.sign({"sub": "service-client", "iss": issuer, "aud": authgateway.OIDC_AUDIENCE})
     )
 
     assert payload["sub"] == "service-client"
@@ -82,16 +82,16 @@ def test_verify_token_enforces_the_discovered_issuer_and_audience(monkeypatch):
 
 def test_wrong_token_issuer_is_unauthorized(monkeypatch):
     key = jwt_helpers.make_key("test-key")
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [key.jwk]})
+    monkeypatch.setattr(authgateway, "get_jwks", lambda: {"keys": [key.jwk]})
     monkeypatch.setattr(
-        traefik_authproxy,
+        authgateway,
         "get_expected_issuer",
         lambda: "https://keycloak.localhost/realms/labs64io",
     )
 
     with pytest.raises(HTTPException) as error:
-        traefik_authproxy.verify_token(
-            key.sign({"sub": "x", "iss": "https://evil.example/realm", "aud": traefik_authproxy.OIDC_AUDIENCE})
+        authgateway.verify_token(
+            key.sign({"sub": "x", "iss": "https://evil.example/realm", "aud": authgateway.OIDC_AUDIENCE})
         )
 
     assert error.value.status_code == 401
@@ -101,8 +101,8 @@ def test_wrong_token_issuer_is_unauthorized(monkeypatch):
 def test_concurrent_jwks_refresh_fetches_once_and_never_returns_an_empty_key_set(monkeypatch):
     import threading
     import time
-    traefik_authproxy.DISCOVERY_CACHE["jwks_uri"] = "http://idp/certs"
-    traefik_authproxy.DISCOVERY_CACHE["issuer"] = "http://idp"
+    authgateway.DISCOVERY_CACHE["jwks_uri"] = "http://idp/certs"
+    authgateway.DISCOVERY_CACHE["issuer"] = "http://idp"
     fetches = []
 
     class Resp:
@@ -117,9 +117,9 @@ def test_concurrent_jwks_refresh_fetches_once_and_never_returns_an_empty_key_set
         time.sleep(0.1)
         return Resp()
 
-    monkeypatch.setattr(traefik_authproxy.requests, "get", fake_get)
+    monkeypatch.setattr(authgateway.requests, "get", fake_get)
     results = []
-    threads = [threading.Thread(target=lambda: results.append(traefik_authproxy.get_jwks())) for _ in range(10)]
+    threads = [threading.Thread(target=lambda: results.append(authgateway.get_jwks())) for _ in range(10)]
     for t in threads:
         t.start()
     for t in threads:

@@ -1,6 +1,6 @@
 # AGENTS.md — Labs64.IO :: Auth Gateway
 
-Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-based RBAC. All inbound requests pass through this proxy.
+Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-based RBAC. All inbound requests pass through this gateway.
 
 ## Ecosystem role
 
@@ -24,7 +24,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
 ## Auth Gateway details
 
-- **App layout** (no longer single-file): `traefik_authproxy.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory routing table, OpenAPI-template matching) + `routes_loader.py` (loads the ConfigMap-mounted routes manifests + static-route policies) + `authz_edge.py` (Cerbos PDP HTTP client — the authorization decision).
+- **App layout** (no longer single-file): `authgateway.py` (FastAPI app, `/auth` decision, JWT verification) + `policy_store.py` (in-memory routing table, OpenAPI-template matching) + `routes_loader.py` (loads the ConfigMap-mounted routes manifests + static-route policies) + `authz_edge.py` (Cerbos PDP HTTP client — the authorization decision).
 - **JWT verification**: `PyJWT` (with the `crypto` extra) with RS256 only. JWKS come from discovery; JWT `iss` must match explicit `OIDC_ISSUER` when configured, otherwise the discovered issuer. The explicit issuer is intentionally independent from the internal discovery transport URL.
 - **Scope extraction**: `TOKEN_SCOPES_CLAIM_PATHS` env var (comma-separated dot-paths, supports `{audience}` placeholder); union of the `scope` claim and Keycloak-style role claims.
 - **Path matching**: per-operation OpenAPI template matching from the generated routes manifests (`ROUTES_DIR`, one `<module>.routes.yaml` per module — `version/module/basePath/routes`, produced by the commons `OpenApiAuthPreprocessor --routes-output`), loaded by `routes_loader.load_routes_dir`. Plus static prefix policies (`STATIC_ROUTES_FILE`, `routes_loader.load_static_routes`). Module routes take priority; static prefixes (longest-prefix) are consulted only when no route template matches; no match at all fails closed (403).
@@ -35,7 +35,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
 
   #### Enforcement logging
 
-  Every module-route decision emits a **summary** line on `traefik_authproxy`:
+  Every module-route decision emits a **summary** line on `authgateway`:
 
   ```
   authz outcome=enforced-<allow|deny> engine=cerbos kind=<resourceKind> action=<action> \
@@ -47,7 +47,7 @@ Traefik ForwardAuth middleware — verifies OIDC/JWT tokens and enforces path-ba
   Sensitive fields (user, tenant, scopes, resource) are **not** in the summary. To see them, raise only the dedicated child logger:
 
   ```python
-  logging.getLogger("traefik_authproxy.authz.detail").setLevel(logging.DEBUG)
+  logging.getLogger("authgateway.authz.detail").setLevel(logging.DEBUG)
   ```
 
   It emits `authz-detail requestId=… user=… tenant=… scopes=… resource=…/…[ error=…] — <METHOD> <path>`, joinable to the summary by `requestId`. Leave it above DEBUG in shared/staging logs.
@@ -86,9 +86,9 @@ Tests: `pytest` in `tests/`. Local docs: `:8081/docs`.
 
 | Goal | Where |
 |------|-------|
-| JWT verification | `traefik_authproxy.py` → `verify_token()` |
-| Scope extraction | `traefik_authproxy.py` → `extract_token_scopes()` |
-| `/auth` decision logic | `traefik_authproxy.py` → `authenticate()` |
+| JWT verification | `authgateway.py` → `verify_token()` |
+| Scope extraction | `authgateway.py` → `extract_token_scopes()` |
+| `/auth` decision logic | `authgateway.py` → `authenticate()` |
 | Policy matching (route/static/conflict) | `policy_store.py` → `PolicyStore.match()` |
 | Routes manifest + static-route loading | `routes_loader.py` → `load_routes_dir` / `load_static_routes` |
 | Static prefix policy format | `static_routes.yaml` |

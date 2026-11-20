@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-import traefik_authproxy
-from traefik_authproxy import app, sanitize_header_value, _uuid7
+import authgateway
+from authgateway import app, sanitize_header_value, _uuid7
 from policy_store import PolicyStore, StaticPolicy
 
 CONTRACT_HEADERS = ("X-Auth-User", "X-Auth-Scopes", "X-Auth-Tenant", "X-Request-ID")
@@ -38,7 +38,7 @@ def test_uuid7_is_valid_uuid_version_7():
 
 @pytest.fixture
 def client(monkeypatch):
-    store = traefik_authproxy.STORE
+    store = authgateway.STORE
     store.set_static([
         StaticPolicy(prefix="/checkout/api", public=False, scopes=("ecommerce-role",), static_id="checkout-api"),
         StaticPolicy(prefix="/checkout/v3/api-docs", public=True, scopes=(), static_id="checkout-docs"),
@@ -47,13 +47,13 @@ def client(monkeypatch):
         decision = "allow"
         reasons = []
         error = ""
-    monkeypatch.setattr(traefik_authproxy.AUTHZ_ENGINE, "decide", lambda *a, **k: MockDecision())
+    monkeypatch.setattr(authgateway.AUTHZ_ENGINE, "decide", lambda *a, **k: MockDecision())
     return TestClient(app)
 
 
 @pytest.fixture
 def valid_token(monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: {
         "sub": "1234-sub",
         "preferred_username": "jdoe",
         "tenant": "t_100",
@@ -92,7 +92,7 @@ def test_authenticated_request_emits_identity(client, valid_token):
 
 
 def test_preferred_username_falls_back_to_sub(client, monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: {
         "sub": "1234-sub",
         "realm_access": {"roles": ["ecommerce-role"]},
     })
@@ -106,7 +106,7 @@ def test_preferred_username_falls_back_to_sub(client, monkeypatch):
 
 
 def test_tenantless_token_emits_dash(client, monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: {
         "sub": "1234-sub",
         "realm_access": {"roles": ["ecommerce-role"]},
     })
@@ -143,7 +143,7 @@ def test_malformed_inbound_request_id_is_replaced(client, valid_token):
 
 
 def test_header_values_are_sanitized(client, monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: {
         "preferred_username": "jdoe\r\nX-Evil: 1",
         "tenant": "t 100",
         "realm_access": {"roles": ["ecommerce-role", "bad role"]},
@@ -174,7 +174,7 @@ def test_unmapped_protected_path_fails_closed(client, valid_token):
 
 
 def test_subjectless_client_token_maps_to_service_principal(client, monkeypatch):
-    monkeypatch.setattr(traefik_authproxy, "verify_token", lambda token: {
+    monkeypatch.setattr(authgateway, "verify_token", lambda token: {
         "azp": "checkout-be",
         "realm_access": {"roles": ["ecommerce-role"]},
     })

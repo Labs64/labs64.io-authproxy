@@ -13,7 +13,7 @@ import yaml
 
 from policy_store import RoutePolicy, StaticPolicy, compile_template
 
-logger = logging.getLogger("traefik_authproxy.routes_loader")
+logger = logging.getLogger("authgateway.routes_loader")
 
 
 def load_routes_dir(routes_dir: str) -> Dict[str, List[RoutePolicy]]:

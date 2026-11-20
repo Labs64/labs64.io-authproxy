@@ -1,4 +1,4 @@
-"""AuthProxy /auth benchmark: the real app under real uvicorn, a fake identity provider and PDP, closed-loop
+"""AuthGateway /auth benchmark: the real app under real uvicorn, a fake identity provider and PDP, closed-loop
 load, and the server process's CPU per request read from /proc (Linux).
 
 CPU per request is the number to watch: throughput on a shared machine is noisy, CPU time is not. Compare
@@ -25,7 +25,7 @@ ap.add_argument("--runs", type=int, default=2)
 a = ap.parse_args()
 
 HERE = pathlib.Path(__file__).parent
-WORK = pathlib.Path(tempfile.mkdtemp(prefix="authproxy-bench-"))
+WORK = pathlib.Path(tempfile.mkdtemp(prefix="authgateway-bench-"))
 ISSUER = "http://127.0.0.1:18090/realms/labs64io"; AUD = "labs64io-api"
 key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key())); jwk.update({"kid": "k1", "use": "sig", "alg": "RS256"})
@@ -43,7 +43,7 @@ routes:
 """)
 token = jwt.encode({"exp": int(time.time()) + 3600, "iss": ISSUER, "aud": AUD, "sub": "svc-loadtest", "azp": "loadtest",
                     "scope": "audit:publish", "tenant": "loadtest"}, key, algorithm="RS256", headers={"kid": "k1"})
-REQ = (b"GET /auth HTTP/1.1\r\nHost: authproxy\r\nX-Forwarded-Method: POST\r\nX-Forwarded-Uri: /auditflow/api/v1/audit/publish\r\n"
+REQ = (b"GET /auth HTTP/1.1\r\nHost: authgateway\r\nX-Forwarded-Method: POST\r\nX-Forwarded-Uri: /auditflow/api/v1/audit/publish\r\n"
        b"Authorization: Bearer " + token.encode() + b"\r\nAccept: */*\r\n\r\n")
 
 def cpu_ticks(pid):
@@ -80,7 +80,7 @@ env = {**os.environ, "OIDC_DISCOVERY_URL": "http://127.0.0.1:18090/.well-known/o
 for kv in a.env: k, v = kv.split("=", 1); env[k] = v
 be = subprocess.Popen([sys.executable, str(HERE/"fake_backend.py"), "18090", str(WORK/"jwks.json"), ISSUER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(0.5)
-cmd = [sys.executable, "-m", "uvicorn", "traefik_authproxy:app", "--host", "127.0.0.1", "--port", "18081", "--no-server-header"] + a.uvicorn.split()
+cmd = [sys.executable, "-m", "uvicorn", "authgateway:app", "--host", "127.0.0.1", "--port", "18081", "--no-server-header"] + a.uvicorn.split()
 srv = subprocess.Popen(cmd, cwd=a.app_dir, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     import urllib.request

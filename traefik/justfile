@@ -1,4 +1,4 @@
-APP_NAME := "traefik-authproxy"
+APP_NAME := "authgateway-traefik"
 
 LOCAL_OIDC := "http://mock-oidc.localhost"
 LOCAL_OIDC_DOCKER := "http://host.docker.internal:8080"

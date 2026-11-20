@@ -9,7 +9,7 @@ import requests
 from fastapi import HTTPException
 
 import jwt_helpers
-import traefik_authproxy
+import authgateway
 
 ISSUER = "https://idp.example/realms/labs64io"
 AUDIENCE = "account"
@@ -57,23 +57,23 @@ class Clock:
 @pytest.fixture
 def clock(monkeypatch):
     c = Clock()
-    monkeypatch.setattr(traefik_authproxy.time, "monotonic", c.monotonic)
+    monkeypatch.setattr(authgateway.time, "monotonic", c.monotonic)
     return c
 
 
 @pytest.fixture
 def provider(monkeypatch, clock):
     p = Provider(jwt_helpers.make_key("key-1"))
-    monkeypatch.setattr(traefik_authproxy.requests, "get", p.get)
-    monkeypatch.setattr(traefik_authproxy, "DISCOVERY_CACHE", {"issuer": ISSUER, "jwks_uri": JWKS_URI})
-    monkeypatch.setattr(traefik_authproxy, "JWKS_CACHE", {})
-    monkeypatch.setattr(traefik_authproxy, "JWKS_CACHE_TIME", 0.0)
-    monkeypatch.setattr(traefik_authproxy, "JWKS_LAST_ATTEMPT", None)
-    monkeypatch.setattr(traefik_authproxy, "JWKS_CACHE_TTL", 3600)
-    monkeypatch.setattr(traefik_authproxy, "JWKS_REFRESH_MIN_INTERVAL", 60)
-    monkeypatch.setattr(traefik_authproxy, "JWKS_MAX_STALE", 86400)
-    monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", AUDIENCE)
-    monkeypatch.setattr(traefik_authproxy, "OIDC_ISSUER", ISSUER)
+    monkeypatch.setattr(authgateway.requests, "get", p.get)
+    monkeypatch.setattr(authgateway, "DISCOVERY_CACHE", {"issuer": ISSUER, "jwks_uri": JWKS_URI})
+    monkeypatch.setattr(authgateway, "JWKS_CACHE", {})
+    monkeypatch.setattr(authgateway, "JWKS_CACHE_TIME", 0.0)
+    monkeypatch.setattr(authgateway, "JWKS_LAST_ATTEMPT", None)
+    monkeypatch.setattr(authgateway, "JWKS_CACHE_TTL", 3600)
+    monkeypatch.setattr(authgateway, "JWKS_REFRESH_MIN_INTERVAL", 60)
+    monkeypatch.setattr(authgateway, "JWKS_MAX_STALE", 86400)
+    monkeypatch.setattr(authgateway, "OIDC_AUDIENCE", AUDIENCE)
+    monkeypatch.setattr(authgateway, "OIDC_ISSUER", ISSUER)
     return p
 
 
@@ -82,12 +82,12 @@ def token(key):
 
 
 def verify(key):
-    return traefik_authproxy.verify_token(token(key))["sub"]
+    return authgateway.verify_token(token(key))["sub"]
 
 
 def status_of(key):
     with pytest.raises(HTTPException) as error:
-        traefik_authproxy.verify_token(token(key))
+        authgateway.verify_token(token(key))
     return error.value.status_code
 
 
@@ -150,7 +150,7 @@ def test_failed_refresh_is_retried_after_a_pause_not_on_every_request(provider, 
     assert provider.calls == 2
 
     provider.down = False
-    clock.advance(traefik_authproxy.JWKS_RETRY_INTERVAL + 1)
+    clock.advance(authgateway.JWKS_RETRY_INTERVAL + 1)
     assert verify(key) == "user-1"
     assert provider.calls == 3
     clock.advance(60)
@@ -186,6 +186,6 @@ def test_a_thread_does_not_wait_for_a_refresh_in_progress_when_it_has_previous_k
     assert verify(key) == "user-1"
     clock.advance(3601)
 
-    with traefik_authproxy._JWKS_LOCK:  # another thread is asking the provider
+    with authgateway._JWKS_LOCK:  # another thread is asking the provider
         assert verify(key) == "user-1"
     assert provider.calls == 1

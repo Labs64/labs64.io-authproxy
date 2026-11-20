@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 import jwt_helpers
-import traefik_authproxy
+import authgateway
 
 ISSUER = "https://idp.example/realms/labs64io"
 AUDIENCE = "account"
@@ -18,10 +18,10 @@ AUDIENCE = "account"
 @pytest.fixture
 def key(monkeypatch):
     k = jwt_helpers.make_key("sig-key")
-    monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", AUDIENCE)
-    monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: ISSUER)
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [k.jwk]})
-    monkeypatch.setattr(traefik_authproxy, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [k.jwk]})
+    monkeypatch.setattr(authgateway, "OIDC_AUDIENCE", AUDIENCE)
+    monkeypatch.setattr(authgateway, "get_expected_issuer", lambda: ISSUER)
+    monkeypatch.setattr(authgateway, "get_jwks", lambda: {"keys": [k.jwk]})
+    monkeypatch.setattr(authgateway, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [k.jwk]})
     return k
 
 
@@ -31,18 +31,18 @@ def claims(**overrides):
 
 def unauthorized(token):
     with pytest.raises(HTTPException) as error:
-        traefik_authproxy.verify_token(token)
+        authgateway.verify_token(token)
     assert error.value.status_code == 401
     return error.value.detail
 
 
 def test_valid_token_is_accepted(key):
-    assert traefik_authproxy.verify_token(key.sign(claims()))["sub"] == "user-1"
+    assert authgateway.verify_token(key.sign(claims()))["sub"] == "user-1"
 
 
 def test_audience_may_be_a_string_or_a_list(key):
-    assert traefik_authproxy.verify_token(key.sign(claims(aud=AUDIENCE)))["sub"] == "user-1"
-    assert traefik_authproxy.verify_token(key.sign(claims(aud=["other", AUDIENCE])))["sub"] == "user-1"
+    assert authgateway.verify_token(key.sign(claims(aud=AUDIENCE)))["sub"] == "user-1"
+    assert authgateway.verify_token(key.sign(claims(aud=["other", AUDIENCE])))["sub"] == "user-1"
 
 
 def test_expired_token_is_reported_as_expired(key):
@@ -60,7 +60,7 @@ def test_token_not_yet_valid_is_rejected(key):
 
 
 def test_iat_slightly_in_the_future_is_tolerated(key):
-    assert traefik_authproxy.verify_token(key.sign(claims(iat=int(time.time()) + 30)))["sub"] == "user-1"
+    assert authgateway.verify_token(key.sign(claims(iat=int(time.time()) + 30)))["sub"] == "user-1"
 
 
 def test_wrong_audience_is_rejected(key):
@@ -111,12 +111,12 @@ def test_keycloak_style_jwks_with_an_encryption_key_still_verifies(monkeypatch):
     """Keycloak publishes RSA-OAEP `enc` keys next to the RS256 `sig` key."""
     sig = jwt_helpers.make_key("sig-key")
     enc = jwt_helpers.make_key("enc-key", use="enc", alg="RSA-OAEP")
-    monkeypatch.setattr(traefik_authproxy, "OIDC_AUDIENCE", AUDIENCE)
-    monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: ISSUER)
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", lambda: {"keys": [enc.jwk, sig.jwk]})
-    monkeypatch.setattr(traefik_authproxy, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [enc.jwk, sig.jwk]})
+    monkeypatch.setattr(authgateway, "OIDC_AUDIENCE", AUDIENCE)
+    monkeypatch.setattr(authgateway, "get_expected_issuer", lambda: ISSUER)
+    monkeypatch.setattr(authgateway, "get_jwks", lambda: {"keys": [enc.jwk, sig.jwk]})
+    monkeypatch.setattr(authgateway, "_refresh_jwks_for_unknown_kid", lambda kid: {"keys": [enc.jwk, sig.jwk]})
 
-    assert traefik_authproxy.verify_token(sig.sign(claims()))["sub"] == "user-1"
+    assert authgateway.verify_token(sig.sign(claims()))["sub"] == "user-1"
     assert unauthorized(enc.sign(claims())).startswith("Invalid token")
 
 
@@ -126,8 +126,8 @@ def test_jwks_retrieval_failure_is_a_server_error_not_a_401(monkeypatch):
     def boom():
         raise HTTPException(status_code=500, detail="Failed to retrieve JWKS")
 
-    monkeypatch.setattr(traefik_authproxy, "get_jwks", boom)
-    monkeypatch.setattr(traefik_authproxy, "get_expected_issuer", lambda: ISSUER)
+    monkeypatch.setattr(authgateway, "get_jwks", boom)
+    monkeypatch.setattr(authgateway, "get_expected_issuer", lambda: ISSUER)
     with pytest.raises(HTTPException) as error:
-        traefik_authproxy.verify_token(k.sign(claims()))
+        authgateway.verify_token(k.sign(claims()))
     assert error.value.status_code == 500

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import jwt_helpers
-import traefik_authproxy as ta
+import authgateway as ta
 
 ISSUER = "https://idp.example/realms/labs64io"
 AUDIENCE = "account"
@@ -164,10 +164,10 @@ def test_an_unexpected_record_shape_is_kept():
 def test_an_allowed_request_logs_one_info_line(caplog):
     class Decision:
         decision, error = "allow", None
-    with caplog.at_level(logging.INFO, logger="traefik_authproxy"):
+    with caplog.at_level(logging.INFO, logger="authgateway"):
         ta._log_authz(Decision, method="POST", path="/p", resource_kind="k", action="a",
                       user_id="u", scopes=[], tenant=None, request_id="r1")
-    assert [r for r in caplog.records if r.name == "traefik_authproxy"][0].getMessage().startswith("authz outcome=enforced-allow")
+    assert [r for r in caplog.records if r.name == "authgateway"][0].getMessage().startswith("authz outcome=enforced-allow")
 
 
 def test_the_pdp_client_does_not_log_every_call():
